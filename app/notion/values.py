@@ -10,6 +10,14 @@ def rich_text(text: str) -> dict:
     return {"rich_text": [{"type": "text", "text": {"content": chunk}} for chunk in chunks]}
 
 
+def title(text: str) -> dict:
+    return {"title": rich_text(text)["rich_text"]}
+
+
+def url(link: str) -> dict:
+    return {"url": link or None}
+
+
 def multi_select(names: list[str]) -> dict:
     return {"multi_select": [{"name": name} for name in names[:MAX_ITEMS]]}
 

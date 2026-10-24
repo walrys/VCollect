@@ -147,3 +147,43 @@ def test_pull_endpoint_reports_schema_problems_in_health(settings):
     assert 'no "URL" URL property' in response.json()["detail"]
     assert health["notion"]["configured"] is True
     assert 'no "URL" URL property' in health["notion"]["error"]
+
+
+def wait_on(conn, post_id, field, edited_at):
+    with conn:
+        conn.execute(
+            "INSERT INTO pending_edits (post_id, field, edited_at) VALUES (?, ?, ?)",
+            (post_id, field, edited_at),
+        )
+
+
+def test_a_newer_gallery_edit_survives_a_pull(conn):
+    fake = FakeNotion(FULL_SCHEMA)
+    page = fake.add_row(url="https://youtu.be/a", caption="from notion", tags=["one"])
+    pull_once(fake, conn)
+    post_id = post(conn, page)["id"]
+    with conn:
+        conn.execute("UPDATE posts SET user_caption = 'from the gallery' WHERE id = ?", (post_id,))
+    wait_on(conn, post_id, "caption", "2099-01-01T00:00:00+00:00")
+
+    fake.edit_row(page, tags=["two"])
+    pull_once(fake, conn)
+
+    assert post(conn, page)["user_caption"] == "from the gallery"
+    assert tags(conn, page, "notion") == ["two"]  # fields without a waiting edit follow Notion
+    assert conn.execute("SELECT COUNT(*) FROM pending_edits").fetchone()[0] == 1
+
+
+def test_a_newer_notion_edit_beats_a_waiting_gallery_edit(conn):
+    fake = FakeNotion(FULL_SCHEMA)
+    page = fake.add_row(url="https://youtu.be/a", caption="from notion")
+    pull_once(fake, conn)
+    post_id = post(conn, page)["id"]
+    with conn:
+        conn.execute("UPDATE posts SET user_caption = 'from the gallery' WHERE id = ?", (post_id,))
+    wait_on(conn, post_id, "caption", "2000-01-01T00:00:00+00:00")
+
+    pull_once(fake, conn)
+
+    assert post(conn, page)["user_caption"] == "from notion"
+    assert conn.execute("SELECT COUNT(*) FROM pending_edits").fetchone()[0] == 0

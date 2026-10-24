@@ -7,6 +7,7 @@ from app import db
 from app.config import Settings
 from app.main import create_app
 from tests.fakes.samples import make_samples
+from tests.support import synced_app
 
 # Port 9 (discard) refuses connections, so the AI services read as unreachable.
 UNREACHABLE = "http://127.0.0.1:9"
@@ -47,3 +48,9 @@ def conn(tmp_path):
     with closing(db.connect(tmp_path / "test.db")) as conn:
         db.migrate(conn)
         yield conn
+
+
+@pytest.fixture
+def synced(settings, samples):
+    with synced_app(settings, samples) as app:
+        yield app

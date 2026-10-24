@@ -35,6 +35,17 @@ EXISTING_SCHEMA = {
     "Tags": prop("Tags", "multi_select"),
 }
 
+# Notion property name -> the field add_row() and row() use for it.
+FIELDS = {
+    "URL": "url",
+    "Caption": "caption",
+    "Tags": "tags",
+    "Status": "status",
+    "Error": "error",
+    "Summary": "summary",
+    "AI Tags": "ai_tags",
+}
+
 FULL_SCHEMA = {
     **EXISTING_SCHEMA,
     "Status": status_prop("Not started", "Done", "Failed"),
@@ -54,6 +65,7 @@ class FakeNotion:
         self.refuse_status_creation = False
         self.refuse_page_updates = False  # answer page updates as if Notion were down
         self.page_updates: list[tuple[str, dict]] = []
+        self.trashed: list[str] = []
         self._rows: dict[str, dict] = {}
         self._ids = itertools.count(1)
         self._clock = datetime(2026, 10, 1, tzinfo=UTC)
@@ -80,19 +92,28 @@ class FakeNotion:
     async def update_page(self, page_id: str, properties: dict) -> dict:
         if self.refuse_page_updates:
             raise NotionError(503, "service_unavailable", "Notion is down.")
+        if page_id not in self._rows:
+            raise NotionError(404, "object_not_found", "Could not find page.")
         self.page_updates.append((page_id, copy.deepcopy(properties)))
-        fields = {"Status": "status", "Summary": "summary", "Error": "error", "AI Tags": "ai_tags"}
         row = self._rows[page_id]
-        for name, value in properties.items():
-            ((kind, content),) = value.items()
-            if kind == "status":
-                row[fields[name]] = content["name"]
-            elif kind == "rich_text":
-                row[fields[name]] = "".join(part["text"]["content"] for part in content)
-            elif kind == "multi_select":
-                row[fields[name]] = [option["name"] for option in content]
+        self._apply(row, properties)
         row["edited"] = self._tick()
         return self._page(page_id, row)
+
+    async def create_page(self, properties: dict) -> dict:
+        if self.refuse_page_updates:
+            raise NotionError(503, "service_unavailable", "Notion is down.")
+        page_id = self.add_row()
+        self._apply(self._rows[page_id], properties)
+        return self._page(page_id, self._rows[page_id])
+
+    async def trash_page(self, page_id: str) -> dict:
+        if self.refuse_page_updates:
+            raise NotionError(503, "service_unavailable", "Notion is down.")
+        if page_id not in self._rows:
+            raise NotionError(404, "object_not_found", "Could not find page.")
+        self.trashed.append(page_id)
+        return {**self._page(page_id, self._rows.pop(page_id)), "in_trash": True}
 
     def row(self, page_id: str) -> dict:
         return self._rows[page_id]
@@ -124,6 +145,20 @@ class FakeNotion:
 
     def created_time(self, page_id: str) -> str:
         return self._rows[page_id]["created"]
+
+    def _apply(self, row: dict, properties: dict) -> None:
+        """Writes property values, as sent by NotionClient callers, into a row."""
+        for name, value in properties.items():
+            ((kind, content),) = value.items()
+            field = FIELDS[name]
+            if kind == "status":
+                row[field] = content["name"]
+            elif kind in {"rich_text", "title"}:
+                row[field] = "".join(part["text"]["content"] for part in content)
+            elif kind == "multi_select":
+                row[field] = [option["name"] for option in content]
+            elif kind == "url":
+                row[field] = content or ""
 
     def _merge_options(self, name: str, options: list[dict]) -> list[dict]:
         current = self.properties.get(name, {}).get("status", {}).get("options", [])

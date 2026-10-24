@@ -51,6 +51,28 @@ export function addTagFilter(key) {
   render();
 }
 
+// After an edit saved in the player.
+function updatePost(post) {
+  const index = state.posts.findIndex((p) => p.id === post.id);
+  if (index >= 0) state.posts[index] = post;
+  if (state.searchIds) runSearch(); // the edit may change what matches
+  else render();
+}
+
+// After a delete in the player; `waiting` is the new count of rows for Sync.
+function removePost(id, waiting) {
+  state.posts = state.posts.filter((post) => post.id !== id);
+  document.dispatchEvent(new CustomEvent("vcollect:waiting", { detail: waiting }));
+  render();
+}
+
+// Every tag name in use, for the editor's suggestions.
+function knownTags() {
+  const names = (field) =>
+    [...new Set(state.posts.flatMap((post) => post[field]))].sort((a, b) => a.localeCompare(b));
+  return { notion: names("tags"), ai: names("ai_tags") };
+}
+
 async function runSearch() {
   const text = el("search").value.trim();
   if (!text) {
@@ -178,7 +200,12 @@ function tile(post, visible) {
     button.append(caption);
   }
   button.addEventListener("click", () =>
-    openPlayer(visible, visible.indexOf(post), { onTag: addTagFilter }),
+    openPlayer([...visible], visible.indexOf(post), {
+      onTag: addTagFilter,
+      onChange: updatePost,
+      onDelete: removePost,
+      knownTags,
+    }),
   );
   return button;
 }

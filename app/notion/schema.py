@@ -11,8 +11,10 @@ class SchemaError(Exception):
     """The data source cannot be used as it is; the message tells the user what to fix."""
 
 
-async def ensure_schema(client: NotionClient, props: NotionProps) -> None:
+async def ensure_schema(client: NotionClient, props: NotionProps) -> str:
+    """Checks and completes the schema; returns the caption's type, "title" or "rich_text"."""
     existing = (await client.retrieve_data_source())["properties"]
+    caption_kind = existing.get(props.caption, {}).get("type", "rich_text")
     added_if_missing = {
         props.caption: "rich_text",
         props.tags: "multi_select",
@@ -43,7 +45,7 @@ async def ensure_schema(client: NotionClient, props: NotionProps) -> None:
     if status_options is not None:
         changes[props.status] = {"status": {"options": status_options}}
     if not changes:
-        return
+        return caption_kind
 
     try:
         await client.update_data_source_properties(changes)
@@ -54,6 +56,7 @@ async def ensure_schema(client: NotionClient, props: NotionProps) -> None:
             f'Notion would not set up the "{props.status}" property ({error}). Add it by hand '
             "as a Status property with the options Not started, Done and Failed."
         ) from error
+    return caption_kind
 
 
 def _status_options_to_set(status: dict | None) -> list[dict] | None:

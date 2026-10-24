@@ -10,6 +10,10 @@
 <body>
   <header class="topbar">
     <h1 class="wordmark">VCOLLECT</h1>
+    <form id="add-form" class="add-form">
+      <input id="add-url" type="url" placeholder="Add a link" required aria-label="Add a link">
+      <button class="button secondary" type="submit">Add</button>
+    </form>
     <nav class="menu">
       <label class="toggle">
         <input type="checkbox" id="group-by-date">
@@ -54,17 +58,26 @@
     </div>
     <aside class="player-info">
       <button id="player-close" class="player-close" type="button" aria-label="Close">×</button>
-      <h2 id="player-title" class="player-title"></h2>
-      <p id="player-meta" class="player-meta"></p>
-      <p id="player-summary" class="player-summary"></p>
-      <p id="player-caption" class="player-caption"></p>
-      <div id="player-tags" class="tags"></div>
-      <div id="player-ai-tags" class="tags"></div>
-      <p class="player-links">
-        <a id="player-original" target="_blank" rel="noopener">Open original</a>
-        <a id="player-notion" target="_blank" rel="noopener">Open in Notion</a>
-      </p>
+      <div id="player-view">
+        <h2 id="player-title" class="player-title"></h2>
+        <p id="player-meta" class="player-meta"></p>
+        <p id="player-summary" class="player-summary"></p>
+        <p id="player-caption" class="player-caption"></p>
+        <div id="player-tags" class="tags"></div>
+        <div id="player-ai-tags" class="tags"></div>
+        <p class="player-links">
+          <a id="player-original" target="_blank" rel="noopener">Open original</a>
+          <a id="player-notion" target="_blank" rel="noopener">Open in Notion</a>
+        </p>
+        <div class="player-actions">
+          <button id="player-edit" class="button secondary" type="button">Edit</button>
+          <button id="player-delete" class="link-button danger" type="button">Delete</button>
+        </div>
+      </div>
+      <form id="player-editor" class="editor" hidden></form>
     </aside>
   </dialog>
+
+  <div id="toast" class="toast" role="status" popover="manual"></div>
 </body>
 </html>

@@ -13,13 +13,13 @@ router = APIRouter()
 
 @router.post("/pull")
 async def pull(request: Request) -> dict:
-    puller = request.app.state.puller
-    if puller is None:
+    mirror = request.app.state.mirror
+    if mirror is None:
         raise HTTPException(
             409, "Notion is not configured: set NOTION_TOKEN and NOTION_DATA_SOURCE_ID."
         )
     try:
-        result = await puller.pull()
+        result = await mirror.pull()
     except SchemaError as error:
         raise HTTPException(409, str(error)) from error
     except (NotionError, HTTPError) as error:

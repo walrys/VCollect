@@ -69,7 +69,7 @@ v1 deliberately leaves out:
 - Transcripts and media stay local; Notion never receives them.
 
 ### Sync with Notion (two-way)
-- **Push**: every gallery edit (Notion tags including brand-new options, caption, summary, AI tags, delete, Add URL) goes to Notion as soon as it is saved. If Notion is unreachable the edit queues and flushes on the next Sync.
+- **Push**: every gallery edit (Notion tags including brand-new options, caption, summary, AI tags, delete, Add URL) goes to Notion as soon as it is saved. Edits are written locally first and listed in `pending_edits` until Notion has them; if Notion is unreachable they wait, and the next pull (launch, page load or Sync) sends them before reading Notion back. Delete needs Notion: when it cannot be reached, nothing is deleted.
 - **Pull**: a full read of every row (100 per request) on app launch, on every page load or refresh, and at the start of every Sync. A load within 60 s of the last pull reuses it (Notion allows ~3 requests/s). Pulls run in the background: the page renders from SQLite and updates in place. Each pull also refreshes the "Sync (N new)" count.
 - **Auto-pull**: a 5-minute pull is a menu toggle, off by default. Notion webhooks need a public HTTPS endpoint, so polling is the only option.
 - **Conflicts**: per field, the newest edit wins.
@@ -117,9 +117,11 @@ app/                     FastAPI package
   config.py              Settings, read from environment variables
   api/                   JSON API routes: health, pull, sync, posts + search; /media serves DATA_DIR/media
   db/                    SQLite connection, append-only MIGRATIONS, tag and search helpers
-  web/                   static page, ES modules, no build: app.js (Sync, services), gallery.js
-                         (grid, tag bar, search, date groups), player.js, tags.js, app.css
-  notion/                Notion client, schema check, pull (push to come)
+  web/                   static page, ES modules, no build: app.js (Sync, Add link, services), gallery.js
+                         (grid, tag bar, search, date groups), player.js, editor.js (edit mode),
+                         tags.js, toast.js, app.css
+  notion/                client, schema check, pull; mirror.py runs every Notion conversation
+                         (pull, push, create, trash) under one lock
   pipeline/              Sync: urls, download, media (ffmpeg), transcribe, summarise; post.py runs
                          one post's steps, runner.py the background job; errors.py decides
                          Failed (PostFailed) vs retry next Sync (TryLater)
@@ -150,6 +152,7 @@ build:   docker compose build
 - Tests run offline: fakes for Notion and the downloaders, plus the clip in `tests/fixtures/` for real ffmpeg and whisper checks.
 - Pipeline steps check for their own output first, so a rerun resumes.
 - Lint and format with ruff.
+- In development, saving any `.py` file under `app/` restarts the server, which stops a running Sync (the next press resumes it). Page files (`app/web/`) reload without a restart.
 
 ## Domain notes
 
@@ -166,6 +169,6 @@ build:   docker compose build
 
 - Whisper on the GPU: speaches' pinned CUDA images are built on CUDA 12.4 / 12.6 (latest release 0.9.0-rc.3, Dec 2025), and the RTX 5070 Ti (Blackwell) needs 12.8+. Whisper therefore runs on the CPU, which the Ryzen 7700 handles easily for `small.en`. Revisit if speaches ships a 12.8+ build.
 - Instagram image posts and carousels (gallery-dl) are untested against the real site until `cookies.txt` exists. Reels via yt-dlp work without one.
-- Not built yet: the deleted-in-Notion dialog before Sync (Sync skips those posts for now); gallery editing and push to Notion (tags, caption, summary, AI tags, promote, delete); Add URL; the auto-pull toggle and disk usage in the menu.
+- Not built yet: the deleted-in-Notion dialog before Sync (Sync skips those posts for now; kept posts would become local-only, with "Re-add to Notion"); the auto-pull toggle and disk usage in the menu.
 - N100 throughput is unmeasured: time a Sync on ZimaOS before deciding to move there.
 - Future: an iOS-only native app on the JSON API.

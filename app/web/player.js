@@ -1,24 +1,38 @@
 // The pop-up player: one post, its items, and the filtered posts either side of it.
 // Left/right (arrows, swipe or the side buttons) step through a post's items, then on
-// into the neighbouring post.
+// into the neighbouring post. Edit and Delete act on the post shown.
 
+import { renderEditor } from "./editor.js";
 import { tagChip, tagKey } from "./tags.js";
+import { errorText, toast } from "./toast.js";
 
 const el = (id) => document.getElementById(id);
 const SWIPE_PX = 50;
+
+// What Notion made of a saved edit, as /api/posts/{id} reports it.
+const SAVED_MESSAGES = {
+  saved: "Saved",
+  waiting: "Saved here; Notion gets it on the next Sync",
+  local: "Saved (this post is not in Notion)",
+  unchanged: "No changes",
+};
 
 const dialog = el("player");
 let posts = [];
 let postIndex = 0;
 let itemIndex = 0;
-let onTag = () => {};
+let editing = false;
+let handlers = {};
 
-export function openPlayer(list, index, handlers) {
+/** `with`: onTag(key), onChange(post), onDelete(id, waiting), knownTags() -> {notion, ai}. */
+export function openPlayer(list, index, withHandlers) {
   posts = list;
   postIndex = index;
   itemIndex = 0;
-  onTag = handlers.onTag;
-  show();
+  editing = false;
+  handlers = withHandlers;
+  showMedia();
+  showInfo();
   if (!dialog.open) dialog.showModal();
 }
 
@@ -32,11 +46,13 @@ function step(delta) {
     if (nextPost < 0 || nextPost >= posts.length) return;
     postIndex = nextPost;
     itemIndex = delta > 0 ? 0 : posts[nextPost].items.length - 1;
+    editing = false; // moving on drops an unsaved edit
   }
-  show();
+  showMedia();
+  showInfo();
 }
 
-function show() {
+function showMedia() {
   const post = posts[postIndex];
   const item = post.items[itemIndex];
   const stage = el("player-stage");
@@ -62,6 +78,23 @@ function show() {
   el("player-count").textContent =
     post.items.length > 1 ? `${itemIndex + 1} / ${post.items.length}` : "";
   el("player-count").hidden = post.items.length < 2;
+}
+
+function showInfo() {
+  const post = posts[postIndex];
+  el("player-view").hidden = editing;
+  el("player-editor").hidden = !editing;
+  if (editing) {
+    renderEditor(el("player-editor"), post, {
+      knownTags: handlers.knownTags(),
+      onSave: save,
+      onCancel: () => {
+        editing = false;
+        showInfo();
+      },
+    });
+    return;
+  }
 
   el("player-title").textContent = post.title || post.caption || hostname(post.url);
   const saved = new Date(post.saved_at).toLocaleDateString(undefined, { dateStyle: "medium" });
@@ -82,7 +115,7 @@ function show() {
         tagChip(kind, name, {
           onClick: () => {
             dialog.close();
-            onTag(tagKey(kind, name));
+            handlers.onTag(tagKey(kind, name));
           },
         }),
       ),
@@ -92,6 +125,49 @@ function show() {
   el("player-original").href = post.url;
   el("player-notion").href = post.notion_url;
   el("player-notion").hidden = !post.notion_url;
+}
+
+async function save(changes) {
+  const post = posts[postIndex];
+  const response = await fetch(`/api/posts/${post.id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(changes),
+  });
+  if (!response.ok) {
+    toast(await errorText(response), "error");
+    return;
+  }
+  const result = await response.json();
+  posts[postIndex] = result.post;
+  handlers.onChange(result.post);
+  editing = false;
+  showInfo();
+  if (result.notion === "rejected") toast(`Saved here, but Notion refused it: ${result.message}`, "error");
+  else toast(SAVED_MESSAGES[result.notion] ?? "Saved", result.notion === "waiting" ? "warn" : "");
+}
+
+async function remove() {
+  const post = posts[postIndex];
+  const where = post.state === "synced" ? " and its Notion row goes to Notion's trash" : "";
+  if (!confirm(`Delete this post? Its files are removed${where}.`)) return;
+  const response = await fetch(`/api/posts/${post.id}`, { method: "DELETE" });
+  if (!response.ok) {
+    toast(await errorText(response), "error");
+    return;
+  }
+  const result = await response.json();
+  handlers.onDelete(post.id, result.new);
+  posts.splice(postIndex, 1);
+  toast("Deleted");
+  if (posts.length === 0) {
+    dialog.close();
+    return;
+  }
+  postIndex = Math.min(postIndex, posts.length - 1);
+  itemIndex = 0;
+  showMedia();
+  showInfo();
 }
 
 function hostname(url) {
@@ -105,6 +181,11 @@ function hostname(url) {
 el("player-prev").addEventListener("click", () => step(-1));
 el("player-next").addEventListener("click", () => step(1));
 el("player-close").addEventListener("click", () => dialog.close());
+el("player-edit").addEventListener("click", () => {
+  editing = true;
+  showInfo();
+});
+el("player-delete").addEventListener("click", remove);
 // A click on the backdrop lands on the dialog element itself.
 dialog.addEventListener("click", (event) => {
   if (event.target === dialog) dialog.close();
@@ -114,6 +195,7 @@ dialog.addEventListener(
   "keydown",
   (event) => {
     if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
+    if (event.target.closest("input, textarea")) return; // moving the text cursor
     event.preventDefault(); // the video would otherwise seek
     step(event.key === "ArrowRight" ? 1 : -1);
   },

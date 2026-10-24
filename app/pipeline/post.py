@@ -52,21 +52,7 @@ class Pipeline:
         return self.data_dir / "work"
 
     def index_links(self, conn: sqlite3.Connection) -> None:
-        """Give every post its canonical link before processing, so duplicates resolve to the
-        earliest saved row whichever order posts are processed in."""
-        rows = conn.execute(
-            "SELECT id, url FROM posts WHERE normalized_url IS NULL AND url != ''"
-        ).fetchall()
-        with conn:
-            for post_id, url in rows:
-                try:
-                    link = normalise(url)
-                except PostFailed:
-                    continue
-                conn.execute(
-                    "UPDATE posts SET normalized_url = ?, platform = ? WHERE id = ?",
-                    (link.url, link.platform, post_id),
-                )
+        index_links(conn)
 
     async def process(
         self,
@@ -275,6 +261,24 @@ class _ScratchDir(tempfile.TemporaryDirectory):
 
     def __enter__(self) -> Path:
         return Path(self.name)
+
+
+def index_links(conn: sqlite3.Connection) -> None:
+    """Give every post its canonical link before processing, so duplicates resolve to the
+    earliest saved row whichever order posts are processed in."""
+    rows = conn.execute(
+        "SELECT id, url FROM posts WHERE normalized_url IS NULL AND url != ''"
+    ).fetchall()
+    with conn:
+        for post_id, url in rows:
+            try:
+                link = normalise(url)
+            except PostFailed:
+                continue
+            conn.execute(
+                "UPDATE posts SET normalized_url = ?, platform = ? WHERE id = ?",
+                (link.url, link.platform, post_id),
+            )
 
 
 def _reject_duplicate(conn: sqlite3.Connection, post: sqlite3.Row, link: PostUrl) -> None:

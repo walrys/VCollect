@@ -90,6 +90,15 @@ MIGRATIONS: list[str] = [
     );
     {SEARCH_ROWS};
     """,
+    # Gallery edits Notion has not received yet: one row per post and field.
+    """
+    CREATE TABLE pending_edits (
+        post_id   INTEGER NOT NULL REFERENCES posts (id) ON DELETE CASCADE,
+        field     TEXT NOT NULL CHECK (field IN ('caption', 'summary', 'tags', 'ai_tags')),
+        edited_at TEXT NOT NULL,  -- UTC ISO 8601
+        PRIMARY KEY (post_id, field)
+    );
+    """,
 ]
 
 
@@ -125,6 +134,15 @@ def search(conn: sqlite3.Connection, text: str) -> list[int]:
     query = " ".join(f'"{word}"*' for word in words)
     rows = conn.execute("SELECT rowid FROM post_search WHERE post_search MATCH ?", (query,))
     return [post_id for (post_id,) in rows]
+
+
+def tag_names(conn: sqlite3.Connection, post_id: int, kind: str) -> list[str]:
+    rows = conn.execute(
+        "SELECT tags.name FROM tags JOIN post_tags ON post_tags.tag_id = tags.id"
+        " WHERE post_tags.post_id = ? AND tags.kind = ? ORDER BY tags.name",
+        (post_id, kind),
+    )
+    return [name for (name,) in rows]
 
 
 def set_tags(conn: sqlite3.Connection, post_id: int, kind: str, names: list[str]) -> None:

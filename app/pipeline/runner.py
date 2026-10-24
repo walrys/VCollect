@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from app import db
-from app.notion.pull import Puller
+from app.notion.mirror import Mirror
 from app.pipeline.errors import LoginNeeded, PostFailed, TryLater
 from app.pipeline.post import Pipeline
 
@@ -41,9 +41,9 @@ class Progress:
 
 
 class Syncer:
-    def __init__(self, pipeline: Pipeline, puller: Puller, db_path: Path, disk_cap_gb: float):
+    def __init__(self, pipeline: Pipeline, mirror: Mirror, db_path: Path, disk_cap_gb: float):
         self.pipeline = pipeline
-        self.puller = puller
+        self.mirror = mirror
         self.db_path = db_path
         self.disk_cap_bytes = disk_cap_gb * 1024**3
         self.progress = Progress()
@@ -81,7 +81,7 @@ class Syncer:
     async def _run(self) -> None:
         progress = self.progress
         try:
-            await self.puller.pull(force=True)
+            await self.mirror.pull(force=True)
             with closing(db.connect(self.db_path)) as conn:
                 self.pipeline.index_links(conn)
                 ids = [

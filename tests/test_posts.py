@@ -1,42 +1,18 @@
 from contextlib import closing
 
 import pytest
-from fastapi.testclient import TestClient
 
 from app import db
-from app.main import create_app
 from tests.fakes.notion import FULL_SCHEMA, FakeNotion
-from tests.fakes.services import fake_services
-from tests.test_sync import wait_for_sync
 
 
-@pytest.fixture
-def gallery(settings, samples):
-    """An app after one Sync of three rows: two posts that work and a profile link that fails."""
-    notion = FakeNotion(FULL_SCHEMA)
-    notion.add_row(
-        url="https://www.instagram.com/reel/AbCdEf/", caption="pasta trick", tags=["Italian"]
-    )
-    notion.add_row(url="https://www.instagram.com/indiegamejoe")
-    notion.add_row(url="https://youtu.be/dvUGDMxl8OU", caption="synth patch")
-    services = fake_services([samples["small.mp4"]])
-    with TestClient(create_app(settings, notion=notion, services=services)) as client:
-        client.post("/api/sync")
-        wait_for_sync(client)
-        yield client
-
-
-def search(client, text):
-    return client.get("/api/search", params={"q": text}).json()["ids"]
-
-
-def captions(client, ids):
-    posts = {post["id"]: post for post in client.get("/api/posts").json()["posts"]}
+def captions(synced, ids):
+    posts = {post["id"]: post for post in synced.client.get("/api/posts").json()["posts"]}
     return sorted(posts[post_id]["caption"] for post_id in ids)
 
 
-def test_posts_list_the_ready_ones_newest_first(gallery):
-    posts = gallery.get("/api/posts").json()["posts"]
+def test_posts_list_the_ready_ones_newest_first(synced):
+    posts = synced.client.get("/api/posts").json()["posts"]
 
     assert [post["caption"] for post in posts] == ["synth patch", "pasta trick"]
     pasta = posts[1]
@@ -63,24 +39,24 @@ def test_posts_list_the_ready_ones_newest_first(gallery):
         ('"pasta" (trick*', ["pasta trick"]),  # search syntax is just text
     ],
 )
-def test_search_finds_word_prefixes_in_every_field(gallery, text, expected):
-    assert captions(gallery, search(gallery, text)) == expected
+def test_search_finds_word_prefixes_in_every_field(synced, text, expected):
+    assert captions(synced, synced.search(text)) == expected
 
 
-def test_an_empty_search_matches_nothing(gallery):
-    assert search(gallery, "  ") == []
+def test_an_empty_search_matches_nothing(synced):
+    assert synced.search("  ") == []
 
 
-def test_videos_can_seek(gallery):
-    src = gallery.get("/api/posts").json()["posts"][0]["items"][0]["src"]
-    response = gallery.get(src, headers={"Range": "bytes=0-99"})
+def test_videos_can_seek(synced):
+    src = synced.client.get("/api/posts").json()["posts"][0]["items"][0]["src"]
+    response = synced.client.get(src, headers={"Range": "bytes=0-99"})
     assert response.status_code == 206
     assert len(response.content) == 100
 
 
-def test_thumbnails_are_served(gallery):
-    thumb = gallery.get("/api/posts").json()["posts"][0]["thumb"]
-    response = gallery.get(thumb)
+def test_thumbnails_are_served(synced):
+    thumb = synced.client.get("/api/posts").json()["posts"][0]["thumb"]
+    response = synced.client.get(thumb)
     assert response.status_code == 200
     assert response.headers["content-type"] == "image/webp"
 

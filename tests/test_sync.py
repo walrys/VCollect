@@ -1,21 +1,10 @@
-import time
-
 from fastapi.testclient import TestClient
 
 from app.main import create_app
 from app.pipeline.errors import LoginNeeded
 from tests.fakes.notion import FULL_SCHEMA, FakeNotion
 from tests.fakes.services import fake_services
-
-
-def wait_for_sync(client, timeout=30):
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        progress = client.get("/api/sync").json()
-        if not progress["running"] and progress["finished_at"]:
-            return progress
-        time.sleep(0.05)
-    raise AssertionError("Sync did not finish")
+from tests.support import wait_for_sync
 
 
 def test_sync_needs_notion(client):

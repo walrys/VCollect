@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from app import api, db
 from app.config import Settings
 from app.notion.client import NotionClient
-from app.notion.pull import Puller
+from app.notion.mirror import Mirror
 from app.pipeline.download import Downloader
 from app.pipeline.post import Pipeline, Services
 from app.pipeline.runner import Syncer
@@ -44,10 +44,10 @@ def create_app(
         client = notion
         if client is None and settings.notion_configured:
             client = NotionClient(settings.notion_token, settings.notion_data_source_id)
-        app.state.puller = app.state.syncer = None
+        app.state.mirror = app.state.syncer = None
         launch_pull = None
         if client is not None:
-            puller = Puller(client, settings.notion_props, settings.db_path)
+            mirror = Mirror(client, settings.notion_props, settings.db_path)
             pipeline = Pipeline(
                 services=services or _real_services(settings),
                 notion=client,
@@ -55,9 +55,9 @@ def create_app(
                 data_dir=settings.data_dir,
                 keyframes=settings.keyframes,
             )
-            app.state.puller = puller
-            app.state.syncer = Syncer(pipeline, puller, settings.db_path, settings.disk_cap_gb)
-            launch_pull = asyncio.create_task(_pull_on_launch(puller))
+            app.state.mirror = mirror
+            app.state.syncer = Syncer(pipeline, mirror, settings.db_path, settings.disk_cap_gb)
+            launch_pull = asyncio.create_task(_pull_on_launch(mirror))
 
         yield
 
@@ -90,9 +90,9 @@ def _real_services(settings: Settings) -> Services:
     )
 
 
-async def _pull_on_launch(puller: Puller) -> None:
+async def _pull_on_launch(mirror: Mirror) -> None:
     try:
-        await puller.pull()
+        await mirror.pull()
     except Exception as error:
-        # puller.error keeps it for /api/health.
+        # mirror.error keeps it for /api/health.
         logger.warning("Pull on launch failed: %s", error)

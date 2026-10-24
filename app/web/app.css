@@ -10,6 +10,7 @@
   --warn: #b45309;
   --chip-bg: #f5f5f4;
   --chip-border: #d6d3d1;
+  --danger: #b91c1c;
   --radius: 10px;
   color-scheme: light;
 }
@@ -27,6 +28,7 @@
     --warn: #fbbf24;
     --chip-bg: #292524;
     --chip-border: #44403c;
+    --danger: #f87171;
     color-scheme: dark;
   }
 }
@@ -87,6 +89,30 @@ body {
   font: inherit;
   font-weight: 600;
   cursor: pointer;
+}
+
+.button.secondary {
+  border: 1px solid var(--chip-border);
+  background: var(--chip-bg);
+  color: var(--text);
+}
+
+.add-form {
+  display: flex;
+  flex: 1;
+  gap: 8px;
+  max-width: 440px;
+}
+
+.add-form input {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
 }
 
 .button:disabled {
@@ -475,6 +501,95 @@ body {
 
 .player-links a {
   color: var(--accent);
+}
+
+.player-actions {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-top: 20px;
+}
+
+.link-button.danger {
+  color: var(--danger);
+}
+
+.editor {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding-top: 28px;
+}
+
+.editor-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.editor-field > span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.editor textarea,
+.tag-input {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  resize: vertical;
+}
+
+.chip-action {
+  padding: 0 2px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  opacity: 0.7;
+  cursor: pointer;
+}
+
+.chip-action:hover {
+  opacity: 1;
+}
+
+.chip-action:disabled {
+  display: none;
+}
+
+.toast {
+  position: fixed;
+  inset: auto auto 24px 50%;
+  max-width: calc(100vw - 32px);
+  margin: 0;
+  padding: 10px 16px;
+  border: 0;
+  border-radius: var(--radius);
+  background: var(--text);
+  color: var(--bg);
+  font-size: 14px;
+  box-shadow: 0 4px 16px rgb(0 0 0 / 0.3);
+  transform: translateX(-50%);
+}
+
+.toast.warn {
+  background: var(--warn);
+  color: #000;
+}
+
+.toast.error {
+  background: var(--danger);
+  color: #fff;
 }
 
 @media (max-width: 760px) {

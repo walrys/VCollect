@@ -1,6 +1,7 @@
 // Gallery page. Talks to the server only through the JSON API (/api/...).
 
 import { initGallery, loadPosts } from "./gallery.js";
+import { errorText, toast } from "./toast.js";
 
 const el = (id) => document.getElementById(id);
 const POLL_MS = 1000;
@@ -120,6 +121,39 @@ function serviceRow(name, state, ok) {
   return row;
 }
 
+// Adds a Notion row for the link; the next Sync fetches it.
+async function addLink(event) {
+  event.preventDefault();
+  const input = el("add-url");
+  const url = input.value.trim();
+  if (!url) return;
+  const send = (force) =>
+    fetch("/api/posts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url, force }),
+    });
+  let response = await send(false);
+  if (response.status === 409) {
+    const { detail } = await response.clone().json();
+    const duplicate = detail?.duplicate;
+    if (duplicate) {
+      const name = duplicate.caption || duplicate.url;
+      if (!confirm(`This link is already saved as "${name}". Add it again anyway?`)) return;
+      response = await send(true);
+    }
+  }
+  if (!response.ok) {
+    toast(await errorText(response), "error");
+    return;
+  }
+  input.value = "";
+  setSyncLabel((await response.json()).new);
+  toast("Added to Notion. Press Sync to fetch it.");
+}
+
+el("add-form").addEventListener("submit", addLink);
+document.addEventListener("vcollect:waiting", (event) => setSyncLabel(event.detail));
 el("sync").addEventListener("click", startSync);
 el("cancel").addEventListener("click", cancelSync);
 

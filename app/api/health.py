@@ -11,7 +11,7 @@ router = APIRouter()
 @router.get("/health")
 async def health(request: Request) -> dict:
     settings = request.app.state.settings
-    puller = request.app.state.puller
+    mirror = request.app.state.mirror
     async with AsyncClient(timeout=2) as client:
         ollama_models, whisper_up = await asyncio.gather(
             _ollama_models(client, settings.ollama_url),
@@ -19,8 +19,8 @@ async def health(request: Request) -> dict:
         )
     return {
         "notion": {
-            "configured": puller is not None,
-            "error": puller.error if puller else None,
+            "configured": mirror is not None,
+            "error": mirror.error if mirror else None,
         },
         "ollama": {
             "reachable": ollama_models is not None,

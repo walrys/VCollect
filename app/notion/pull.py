@@ -1,21 +1,21 @@
 """Pull: copy every Notion row into SQLite and flag rows that left Notion."""
 
-import asyncio
+import dataclasses
 import sqlite3
-import time
-from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
 
 from app import db
 from app.config import NotionProps
 from app.notion.client import NotionClient
-from app.notion.schema import ensure_schema
 
-# A pull requested within this many seconds of the last one reuses it
-# (Notion allows about 3 requests a second).
-REUSE_SECONDS = 60
+# pending_edits.field -> the NotionRow attribute it overrides.
+EDIT_FIELDS = {
+    "caption": "user_caption",
+    "summary": "summary",
+    "tags": "tags",
+    "ai_tags": "ai_tags",
+}
 
 
 @dataclass(frozen=True)
@@ -41,51 +41,18 @@ class NotionRow:
     ai_tags: list[str]
 
 
-class Puller:
-    """Runs one pull at a time, checking the schema before the first."""
-
-    def __init__(self, client: NotionClient, props: NotionProps, db_path: Path):
-        self.client = client
-        self.props = props
-        self.db_path = db_path
-        self.error: str | None = None  # why the last pull failed, for /api/health
-        self._lock = asyncio.Lock()
-        self._schema_ready = False
-        self._last: PullResult | None = None
-        self._last_at = 0.0
-
-    async def pull(self, force: bool = False) -> PullResult:
-        """`force` skips reusing a recent pull, as Sync must see Notion as it is now."""
-        async with self._lock:
-            recent = self._last and time.monotonic() - self._last_at < REUSE_SECONDS
-            if recent and not force:
-                return self._last
-            try:
-                if not self._schema_ready:
-                    await ensure_schema(self.client, self.props)
-                    self._schema_ready = True
-                with closing(db.connect(self.db_path)) as conn:
-                    self._last = await pull(self.client, self.props, conn)
-            except Exception as error:
-                self.error = str(error)
-                raise
-            self.error = None
-            self._last_at = time.monotonic()
-            return self._last
-
-
 async def pull(client: NotionClient, props: NotionProps, conn: sqlite3.Connection) -> PullResult:
     pages, complete = await client.query_all_pages()
     rows = [parse_page(page, props) for page in pages if not page.get("in_trash")]
     with conn:
         for row in rows:
-            _upsert(conn, row)
+            upsert_row(conn, _keep_newer_local_edits(conn, row))
         # A capped result set says nothing about the rows it left out.
         if complete:
             _flag_deleted(conn, {row.page_id for row in rows})
     return PullResult(
         pulled=len(rows),
-        new=_count(conn, "notion_state = 'synced' AND status = 'Not started'"),
+        new=count_new(conn),
         deleted_in_notion=_count(conn, "notion_state = 'deleted_in_notion'"),
         finished_at=datetime.now(UTC).isoformat(timespec="seconds"),
     )
@@ -110,8 +77,8 @@ def parse_page(page: dict, props: NotionProps) -> NotionRow:
     )
 
 
-def _upsert(conn: sqlite3.Connection, row: NotionRow) -> None:
-    # Notion's values win outright until gallery edits (push) exist; then newest-wins per field.
+def upsert_row(conn: sqlite3.Connection, row: NotionRow) -> int:
+    """Write one Notion row into its post, creating the post if new; returns the post id."""
     post_id = conn.execute(
         """
         INSERT INTO posts (notion_page_id, notion_url, url, user_caption, summary, status, error,
@@ -144,6 +111,43 @@ def _upsert(conn: sqlite3.Connection, row: NotionRow) -> None:
     db.set_tags(conn, post_id, "notion", row.tags)
     db.set_tags(conn, post_id, "ai", row.ai_tags)
     db.reindex_post(conn, post_id)
+    return post_id
+
+
+def count_new(conn: sqlite3.Connection) -> int:
+    return _count(conn, "notion_state = 'synced' AND status = 'Not started'")
+
+
+def _keep_newer_local_edits(conn: sqlite3.Connection, row: NotionRow) -> NotionRow:
+    """Newest edit wins per field: a gallery edit Notion has not received yet beats an older
+    Notion value, and a later Notion edit replaces it (Notion times are to the minute)."""
+    post = conn.execute(
+        "SELECT id, user_caption, summary FROM posts WHERE notion_page_id = ?", (row.page_id,)
+    ).fetchone()
+    if post is None:
+        return row
+    pending = conn.execute(
+        "SELECT field, edited_at FROM pending_edits WHERE post_id = ?", (post["id"],)
+    ).fetchall()
+    notion_edited = _time(row.edited_at)
+    local: dict = {}
+    for field, edited_at in pending:
+        if _time(edited_at) >= notion_edited:
+            local[EDIT_FIELDS[field]] = _local_value(conn, post, field)
+        else:
+            conn.execute(
+                "DELETE FROM pending_edits WHERE post_id = ? AND field = ?", (post["id"], field)
+            )
+    return dataclasses.replace(row, **local)
+
+
+def _local_value(conn: sqlite3.Connection, post: sqlite3.Row, field: str):
+    if field == "caption":
+        return post["user_caption"]
+    if field == "summary":
+        return post["summary"]
+    kind = "notion" if field == "tags" else "ai"
+    return db.tag_names(conn, post["id"], kind)
 
 
 def _flag_deleted(conn: sqlite3.Connection, seen: set[str]) -> None:
@@ -157,6 +161,10 @@ def _flag_deleted(conn: sqlite3.Connection, seen: set[str]) -> None:
 
 def _count(conn: sqlite3.Connection, where: str) -> int:
     return conn.execute(f"SELECT COUNT(*) FROM posts WHERE {where}").fetchone()[0]
+
+
+def _time(iso: str) -> datetime:
+    return datetime.fromisoformat(iso.replace("Z", "+00:00"))
 
 
 def _plain_text(value: dict | None) -> str:
