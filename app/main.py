@@ -45,7 +45,7 @@ def create_app(
         if client is None and settings.notion_configured:
             client = NotionClient(settings.notion_token, settings.notion_data_source_id)
         app.state.mirror = app.state.syncer = None
-        launch_pull = None
+        background: list[asyncio.Task] = []
         if client is not None:
             mirror = Mirror(client, settings.notion_props, settings.db_path)
             pipeline = Pipeline(
@@ -57,12 +57,15 @@ def create_app(
             )
             app.state.mirror = mirror
             app.state.syncer = Syncer(pipeline, mirror, settings.db_path, settings.disk_cap_gb)
-            launch_pull = asyncio.create_task(_pull_on_launch(mirror))
+            background += [
+                asyncio.create_task(_pull_on_launch(mirror)),
+                asyncio.create_task(mirror.auto_pull()),
+            ]
 
         yield
 
-        if launch_pull is not None:
-            launch_pull.cancel()
+        for task in background:
+            task.cancel()
         if app.state.syncer is not None:
             await app.state.syncer.stop()
         if client is not None:

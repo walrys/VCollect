@@ -15,10 +15,6 @@
       <button class="button secondary" type="submit">Add</button>
     </form>
     <nav class="menu">
-      <label class="toggle">
-        <input type="checkbox" id="group-by-date">
-        Group by date
-      </label>
       <button id="sync" class="button" type="button" disabled>Sync</button>
       <div id="progress" class="progress" hidden>
         <div class="progress-row">
@@ -26,6 +22,26 @@
           <button id="cancel" class="link-button" type="button">Cancel</button>
         </div>
         <p id="progress-label" class="progress-label"></p>
+      </div>
+      <button id="menu-button" class="button secondary menu-button" type="button"
+              popovertarget="menu-panel" aria-label="Menu">☰</button>
+      <div id="menu-panel" class="menu-panel" popover>
+        <label class="toggle">
+          <input type="checkbox" id="group-by-date">
+          Group by date
+        </label>
+        <label class="toggle">
+          <input type="checkbox" id="auto-pull">
+          <span id="auto-pull-label">Pull from Notion every 5 min</span>
+        </label>
+        <div class="disk">
+          <div class="disk-row">
+            <span>Storage</span>
+            <span id="disk-text"></span>
+          </div>
+          <meter id="disk-meter" min="0" max="1" value="0"></meter>
+          <p id="disk-note" class="disk-note"></p>
+        </div>
       </div>
     </nav>
   </header>
@@ -65,17 +81,33 @@
         <p id="player-caption" class="player-caption"></p>
         <div id="player-tags" class="tags"></div>
         <div id="player-ai-tags" class="tags"></div>
+        <p id="player-state" class="player-state"></p>
         <p class="player-links">
           <a id="player-original" target="_blank" rel="noopener">Open original</a>
           <a id="player-notion" target="_blank" rel="noopener">Open in Notion</a>
         </p>
         <div class="player-actions">
           <button id="player-edit" class="button secondary" type="button">Edit</button>
+          <button id="player-readd" class="button secondary" type="button">Re-add to Notion</button>
           <button id="player-delete" class="link-button danger" type="button">Delete</button>
         </div>
       </div>
       <form id="player-editor" class="editor" hidden></form>
     </aside>
+  </dialog>
+
+  <dialog id="deleted" class="deleted" aria-labelledby="deleted-title">
+    <form method="dialog">
+      <h2 id="deleted-title" class="deleted-title"></h2>
+      <p class="deleted-help">Ticked posts are deleted here too. Unticked ones stay in the
+        gallery, marked "Not in Notion".</p>
+      <div id="deleted-tiles" class="deleted-tiles"></div>
+      <div class="deleted-actions">
+        <button id="deleted-all" class="link-button" type="button">Untick all</button>
+        <button class="button secondary" value="cancel">Cancel</button>
+        <button id="deleted-go" class="button" value="go"></button>
+      </div>
+    </form>
   </dialog>
 
   <div id="toast" class="toast" role="status" popover="manual"></div>

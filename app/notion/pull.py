@@ -91,7 +91,8 @@ def upsert_row(conn: sqlite3.Connection, row: NotionRow) -> int:
             summary = excluded.summary,
             status = excluded.status,
             error = excluded.error,
-            saved_at = excluded.saved_at,
+            -- A row re-added to Notion is newer than its post, which keeps its first saved date.
+            saved_at = min(posts.saved_at, excluded.saved_at),
             notion_edited_at = excluded.notion_edited_at,
             notion_state = 'synced'
         RETURNING id

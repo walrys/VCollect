@@ -5,6 +5,7 @@ import sqlite3
 from collections import defaultdict
 from contextlib import closing
 from datetime import UTC, datetime
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
 from httpx import HTTPError
@@ -37,6 +38,13 @@ class PostEdit(BaseModel):
 class NewLink(BaseModel):
     url: str
     force: bool = False  # add it even though the link is already saved
+
+
+class DeletedChoice(BaseModel):
+    """The answer to the dialog before Sync about posts whose Notion rows are gone."""
+
+    delete: list[int] = []
+    keep: list[int] = []
 
 
 @router.get("/posts")
@@ -86,10 +94,11 @@ async def edit_post(post_id: int, edit: PostEdit, request: Request) -> dict:
 @router.delete("/posts/{post_id}")
 async def delete_post(post_id: int, request: Request) -> dict:
     """Moves the Notion row to Notion's trash, then deletes the post and its files here.
-    Nothing is deleted when Notion cannot be reached."""
+    Nothing is deleted when Notion cannot be reached. A post that is not in Notion (deleted
+    there, or local-only) is only deleted here."""
     with closing(_connect(request)) as conn:
         post = _post_or_404(conn, post_id)
-    if post["notion_page_id"] is not None:
+    if post["notion_state"] == "synced":
         mirror = request.app.state.mirror
         if mirror is None:
             raise HTTPException(409, "Notion is not configured, so its row cannot be trashed.")
@@ -100,14 +109,63 @@ async def delete_post(post_id: int, request: Request) -> dict:
                 502, f"Could not reach Notion; nothing was deleted: {error}"
             ) from error
 
-    data_dir = request.app.state.settings.data_dir
-    shutil.rmtree(data_dir / "media" / str(post_id), ignore_errors=True)
-    shutil.rmtree(data_dir / "work" / str(post_id), ignore_errors=True)
     with closing(_connect(request)) as conn:
-        with conn:
-            conn.execute("DELETE FROM post_search WHERE rowid = ?", (post_id,))
-            conn.execute("DELETE FROM posts WHERE id = ?", (post_id,))  # items and tags cascade
+        _delete_here(conn, request.app.state.settings.data_dir, post_id)
         return {"deleted": post_id, "new": count_new(conn)}
+
+
+@router.post("/posts/deleted-in-notion")
+async def resolve_deleted(choice: DeletedChoice, request: Request) -> dict:
+    """Deletes the posts in `delete` with their files; the posts in `keep` become local-only
+    and are never asked about again. Only posts flagged deleted-in-Notion are touched (a pull
+    since the dialog opened may have seen one restored), and Notion is not asked: their rows
+    are already gone from it."""
+    with closing(_connect(request)) as conn:
+        flagged = {
+            post_id
+            for (post_id,) in conn.execute(
+                "SELECT id FROM posts WHERE notion_state = 'deleted_in_notion'"
+            )
+        }
+        deleted = [post_id for post_id in dict.fromkeys(choice.delete) if post_id in flagged]
+        kept = [
+            post_id
+            for post_id in dict.fromkeys(choice.keep)
+            if post_id in flagged and post_id not in deleted
+        ]
+        for post_id in deleted:
+            _delete_here(conn, request.app.state.settings.data_dir, post_id)
+        with conn:
+            conn.executemany(
+                "UPDATE posts SET notion_state = 'local_only', notion_page_id = NULL,"
+                " notion_url = '' WHERE id = ?",
+                [(post_id,) for post_id in kept],
+            )
+            conn.executemany(
+                "DELETE FROM pending_edits WHERE post_id = ?", [(post_id,) for post_id in kept]
+            )
+    return {"deleted": deleted, "kept": kept}
+
+
+@router.post("/posts/{post_id}/readd")
+async def readd(post_id: int, request: Request) -> dict:
+    """Gives a local-only post a fresh Notion row holding its link, caption, summary and
+    tags. The post keeps its saved date, although Notion dates the new row today."""
+    mirror = request.app.state.mirror
+    if mirror is None:
+        raise HTTPException(
+            409, "Notion is not configured: set NOTION_TOKEN and NOTION_DATA_SOURCE_ID."
+        )
+    with closing(_connect(request)) as conn:
+        post = _post_or_404(conn, post_id)
+    if post["notion_state"] != "local_only":
+        raise HTTPException(409, "Only posts kept after leaving Notion can be re-added.")
+    try:
+        await mirror.readd(post_id)
+    except (SchemaError, NotionError, HTTPError) as error:
+        raise HTTPException(502, f"Could not add the row to Notion: {error}") from error
+    with closing(_connect(request)) as conn:
+        return {"post": _load(conn, "posts.id = ?", (post_id,))[0], "new": count_new(conn)}
 
 
 @router.post("/posts", status_code=201)
@@ -182,6 +240,15 @@ def _apply(conn, post: sqlite3.Row, edit: PostEdit, tags, ai_tags) -> list[str]:
                 [(post_id, field, edited_at) for field in changed],
             )
     return changed
+
+
+def _delete_here(conn: sqlite3.Connection, data_dir: Path, post_id: int) -> None:
+    """Deletes a post and its files from this app only."""
+    shutil.rmtree(data_dir / "media" / str(post_id), ignore_errors=True)
+    shutil.rmtree(data_dir / "work" / str(post_id), ignore_errors=True)
+    with conn:
+        conn.execute("DELETE FROM post_search WHERE rowid = ?", (post_id,))
+        conn.execute("DELETE FROM posts WHERE id = ?", (post_id,))  # items and tags cascade
 
 
 def _clean_tags(names: list[str], lower: bool) -> list[str]:

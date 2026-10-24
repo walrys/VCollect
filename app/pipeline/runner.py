@@ -97,7 +97,8 @@ class Syncer:
                     if self._cancelled:
                         progress.stopped = "Cancelled"
                         break
-                    if self._disk_used() >= DISK_STOP_SHARE * self.disk_cap_bytes:
+                    used = await asyncio.to_thread(disk_used, self.pipeline.data_dir)
+                    if used >= DISK_STOP_SHARE * self.disk_cap_bytes:
                         progress.stopped = "Stopped: the data folder is near DISK_CAP_GB"
                         break
                     await self._one(conn, post_id, blocked_sites)
@@ -149,9 +150,16 @@ class Syncer:
         if len(self.progress.problems) < MAX_PROBLEMS:
             self.progress.problems.append(message)
 
-    def _disk_used(self) -> int:
-        data_dir = self.pipeline.data_dir
-        return sum(path.stat().st_size for path in data_dir.rglob("*") if path.is_file())
+
+def disk_used(data_dir: Path) -> int:
+    """Bytes in DATA_DIR: the database, media, and downloads in progress."""
+    total = 0
+    for path in data_dir.rglob("*"):
+        try:
+            total += path.stat().st_size if path.is_file() else 0
+        except FileNotFoundError:
+            pass  # removed while counting: a Sync tidying up its downloads
+    return total
 
 
 def _now() -> str:

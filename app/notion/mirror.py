@@ -13,12 +13,14 @@ from app import db
 from app.config import NotionProps
 from app.notion import values
 from app.notion.client import NotionClient, NotionError
-from app.notion.pull import PullResult, parse_page, pull, upsert_row
+from app.notion.pull import EDIT_FIELDS, PullResult, parse_page, pull, upsert_row
 from app.notion.schema import ensure_schema
 
 # A pull requested within this many seconds of the last one reuses it
 # (Notion allows about 3 requests a second).
 REUSE_SECONDS = 60
+AUTO_PULL_SECONDS = 300
+AUTO_PULL = "auto_pull"  # app_settings key: "1" while the menu's auto-pull toggle is on
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +78,43 @@ class Mirror:
             )
             with closing(db.connect(self.db_path)) as conn, conn:
                 return upsert_row(conn, parse_page(page, self.props))
+
+    async def readd(self, post_id: int) -> None:
+        """Gives a local-only post a fresh Notion row holding its link, caption, summary, tags
+        and status, and links the post to it."""
+        async with self._lock:
+            await self._ensure_schema()
+            with closing(db.connect(self.db_path)) as conn:
+                post = conn.execute("SELECT * FROM posts WHERE id = ?", (post_id,)).fetchone()
+                properties = {
+                    self.props.url: values.url(post["url"]),
+                    self.props.status: values.status(post["status"]),
+                    **{
+                        self._property(field): self._value(conn, post_id, post, field)
+                        for field in EDIT_FIELDS
+                    },
+                }
+                page = await self.client.create_page(properties)
+                with conn:
+                    conn.execute(
+                        "UPDATE posts SET notion_page_id = ?, notion_url = ?,"
+                        " notion_edited_at = ?, notion_state = 'synced' WHERE id = ?",
+                        (page["id"], page.get("url", ""), page["last_edited_time"], post_id),
+                    )
+
+    async def auto_pull(self, every: float = AUTO_PULL_SECONDS) -> None:
+        """Runs for the app's lifetime, pulling every `every` seconds while auto-pull is on."""
+        while True:
+            await asyncio.sleep(every)
+            with closing(db.connect(self.db_path)) as conn:
+                on = db.setting(conn, AUTO_PULL) == "1"
+            if not on:
+                continue
+            try:
+                await self.pull()
+            except Exception as error:
+                # self.error keeps it for /api/health.
+                logger.warning("Auto-pull failed: %s", error)
 
     async def trash(self, page_id: str) -> None:
         """Moves a row to Notion's trash. A row that is already gone counts as trashed."""

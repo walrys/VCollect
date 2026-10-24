@@ -34,16 +34,26 @@ export function initGallery() {
   });
 }
 
+let lastLoaded = null; // the /api/posts answer on screen, until the page changes a post
+
 export async function loadPosts() {
   try {
     const response = await fetch("/api/posts");
     if (!response.ok) return;
-    state.posts = (await response.json()).posts;
+    const body = await response.text();
+    if (body === lastLoaded) return; // nothing new: the grid stays as it is
+    lastLoaded = body;
+    state.posts = JSON.parse(body).posts;
     state.loaded = true;
   } catch {
     return;
   }
   render();
+}
+
+// The posts the dialog before Sync asks about.
+export function postsDeletedInNotion() {
+  return state.posts.filter((post) => post.state === "deleted_in_notion");
 }
 
 export function addTagFilter(key) {
@@ -55,6 +65,7 @@ export function addTagFilter(key) {
 function updatePost(post) {
   const index = state.posts.findIndex((p) => p.id === post.id);
   if (index >= 0) state.posts[index] = post;
+  lastLoaded = null;
   if (state.searchIds) runSearch(); // the edit may change what matches
   else render();
 }
@@ -62,6 +73,7 @@ function updatePost(post) {
 // After a delete in the player; `waiting` is the new count of rows for Sync.
 function removePost(id, waiting) {
   state.posts = state.posts.filter((post) => post.id !== id);
+  lastLoaded = null;
   document.dispatchEvent(new CustomEvent("vcollect:waiting", { detail: waiting }));
   render();
 }

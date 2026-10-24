@@ -10,6 +10,9 @@ from app.pipeline.errors import TryLater
 # Whisper invents words over music and silence; segments it rates as likely
 # non-speech are dropped.
 MAX_NO_SPEECH_PROB = 0.6
+# speaches answers 500 when its voice detector finds no speech in more than 30 s of audio
+# (music only). The same audio fails the same way every time, so it means no speech.
+NO_SPEECH_STATUS = 500
 VTT_TAG = re.compile(r"<[^>]+>")
 
 
@@ -29,6 +32,8 @@ class Transcriber:
                     files={"file": (audio.name, audio.read_bytes(), "audio/wav")},
                     data={"model": self.model, "response_format": "verbose_json", "language": "en"},
                 )
+                if response.status_code == NO_SPEECH_STATUS:
+                    return ""
                 response.raise_for_status()
         except httpx.HTTPError as error:
             raise TryLater(f"Whisper failed: {error}") from error

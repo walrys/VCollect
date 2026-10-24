@@ -54,3 +54,8 @@ def test_segments_that_are_likely_not_speech_are_dropped(tmp_path):
 def test_whisper_being_down_means_try_later(tmp_path):
     with pytest.raises(TryLater, match="Whisper failed"):
         transcribe(tmp_path, lambda request: httpx.Response(503))
+
+
+def test_a_server_error_means_no_speech(tmp_path):
+    # speaches fails this way on long audio with no speech in it.
+    assert transcribe(tmp_path, lambda request: httpx.Response(500)) == ""

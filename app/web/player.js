@@ -17,6 +17,12 @@ const SAVED_MESSAGES = {
   unchanged: "No changes",
 };
 
+// Posts outside Notion say so under their tags.
+const STATE_NOTES = {
+  deleted_in_notion: "Deleted in Notion. The next Sync asks whether to keep it here.",
+  local_only: "Not in Notion: kept in this gallery only.",
+};
+
 const dialog = el("player");
 let posts = [];
 let postIndex = 0;
@@ -122,6 +128,9 @@ function showInfo() {
     );
     el(row).hidden = post[field].length === 0;
   }
+  el("player-state").textContent = STATE_NOTES[post.state] ?? "";
+  el("player-state").hidden = !STATE_NOTES[post.state];
+  el("player-readd").hidden = post.state !== "local_only";
   el("player-original").href = post.url;
   el("player-notion").href = post.notion_url;
   el("player-notion").hidden = !post.notion_url;
@@ -170,6 +179,28 @@ async function remove() {
   showInfo();
 }
 
+// A fresh Notion row for a local-only post, holding its link, caption, summary and tags.
+async function readd() {
+  const button = el("player-readd");
+  const post = posts[postIndex];
+  button.disabled = true;
+  try {
+    const response = await fetch(`/api/posts/${post.id}/readd`, { method: "POST" });
+    if (!response.ok) {
+      toast(await errorText(response), "error");
+      return;
+    }
+    const result = await response.json();
+    posts[postIndex] = result.post;
+    handlers.onChange(result.post);
+    document.dispatchEvent(new CustomEvent("vcollect:waiting", { detail: result.new }));
+    showInfo();
+    toast("Added back to Notion");
+  } finally {
+    button.disabled = false;
+  }
+}
+
 function hostname(url) {
   try {
     return new URL(url).hostname.replace(/^www\./, "");
@@ -186,6 +217,7 @@ el("player-edit").addEventListener("click", () => {
   showInfo();
 });
 el("player-delete").addEventListener("click", remove);
+el("player-readd").addEventListener("click", readd);
 // A click on the backdrop lands on the dialog element itself.
 dialog.addEventListener("click", (event) => {
   if (event.target === dialog) dialog.close();

@@ -120,6 +120,19 @@ def migrate(conn: sqlite3.Connection) -> None:
             raise
 
 
+def setting(conn: sqlite3.Connection, key: str, default: str = "") -> str:
+    row = conn.execute("SELECT value FROM app_settings WHERE key = ?", (key,)).fetchone()
+    return default if row is None else row[0]
+
+
+def set_setting(conn: sqlite3.Connection, key: str, value: str) -> None:
+    conn.execute(
+        "INSERT INTO app_settings (key, value) VALUES (?, ?)"
+        " ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+        (key, value),
+    )
+
+
 def reindex_post(conn: sqlite3.Connection, post_id: int) -> None:
     """Refresh a post's search document; call after changing any text or tag of it."""
     conn.execute("DELETE FROM post_search WHERE rowid = ?", (post_id,))

@@ -1,22 +1,28 @@
 // Gallery page. Talks to the server only through the JSON API (/api/...).
 
-import { initGallery, loadPosts } from "./gallery.js";
+import { askAboutDeleted } from "./deleted.js";
+import { initGallery, loadPosts, postsDeletedInNotion } from "./gallery.js";
+import { autoPullOn, initMenu } from "./menu.js";
 import { errorText, toast } from "./toast.js";
 
 const el = (id) => document.getElementById(id);
 const POLL_MS = 1000;
+const REFRESH_MS = 30_000;
+
+let following = false; // this tab is showing a running Sync
 
 // Every page load pulls from Notion; the server reuses a pull from the last minute.
+// True when the pull went through.
 async function pullFromNotion() {
   try {
     const response = await fetch("/api/pull", { method: "POST" });
-    if (!response.ok) return; // /api/health explains why
+    if (!response.ok) return false; // /api/health explains why
     const result = await response.json();
     setSyncLabel(result.new);
-    el("sync").disabled = false;
     await loadPosts(); // the pull may have changed captions and tags
+    return true;
   } catch {
-    // The server is down; showServices says so.
+    return false; // the server is down; showServices says so
   }
 }
 
@@ -24,11 +30,22 @@ function setSyncLabel(waiting) {
   el("sync").textContent = waiting ? `Sync (${waiting} new)` : "Sync";
 }
 
+// Sync: pull, ask about posts deleted in Notion, then process the new rows on the server.
 async function startSync() {
   el("sync").disabled = true;
-  const response = await fetch("/api/sync", { method: "POST" });
-  if (response.ok) followSync(await response.json());
-  else el("sync").disabled = false;
+  try {
+    await pullFromNotion(); // so the question covers rows deleted since the page loaded
+    const gone = postsDeletedInNotion();
+    if (gone.length) {
+      if (!(await askAboutDeleted(gone))) return;
+      await loadPosts();
+    }
+    const response = await fetch("/api/sync", { method: "POST" });
+    if (response.ok) followSync(await response.json());
+    else toast(await errorText(response), "error");
+  } finally {
+    if (!following) el("sync").disabled = false;
+  }
 }
 
 async function cancelSync() {
@@ -39,6 +56,7 @@ async function cancelSync() {
 // Every open tab polls, so each shows the same progress bar. Finished posts join the grid
 // as they land.
 async function followSync(progress) {
+  following = true;
   let done = progress.done;
   while (progress.running) {
     showProgress(progress);
@@ -49,8 +67,23 @@ async function followSync(progress) {
       loadPosts();
     }
   }
+  following = false;
   showProgress(progress);
   loadPosts();
+}
+
+// Keeps a tab in step with what happens elsewhere: a Sync started from another tab, the
+// count of new rows, and with auto-pull on, whatever the server's pulls bring in.
+async function refresh() {
+  if (document.hidden || following) return;
+  try {
+    const progress = await (await fetch("/api/sync")).json();
+    if (progress.running) followSync(progress);
+    else setSyncLabel(progress.new);
+  } catch {
+    return;
+  }
+  if (autoPullOn()) loadPosts();
 }
 
 function showProgress(progress) {
@@ -156,14 +189,17 @@ el("add-form").addEventListener("submit", addLink);
 document.addEventListener("vcollect:waiting", (event) => setSyncLabel(event.detail));
 el("sync").addEventListener("click", startSync);
 el("cancel").addEventListener("click", cancelSync);
+document.addEventListener("visibilitychange", refresh);
+setInterval(refresh, REFRESH_MS);
 
 initGallery();
+initMenu();
 loadPosts();
 
 (async () => {
   const progress = await (await fetch("/api/sync")).json();
   if (progress.running) followSync(progress);
   else if (progress.finished_at) showReport(progress);
-  await pullFromNotion();
+  if (await pullFromNotion()) el("sync").disabled = following;
   showServices();
 })();

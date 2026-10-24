@@ -71,10 +71,10 @@ v1 deliberately leaves out:
 ### Sync with Notion (two-way)
 - **Push**: every gallery edit (Notion tags including brand-new options, caption, summary, AI tags, delete, Add URL) goes to Notion as soon as it is saved. Edits are written locally first and listed in `pending_edits` until Notion has them; if Notion is unreachable they wait, and the next pull (launch, page load or Sync) sends them before reading Notion back. Delete needs Notion: when it cannot be reached, nothing is deleted.
 - **Pull**: a full read of every row (100 per request) on app launch, on every page load or refresh, and at the start of every Sync. A load within 60 s of the last pull reuses it (Notion allows ~3 requests/s). Pulls run in the background: the page renders from SQLite and updates in place. Each pull also refreshes the "Sync (N new)" count.
-- **Auto-pull**: a 5-minute pull is a menu toggle, off by default. Notion webhooks need a public HTTPS endpoint, so polling is the only option.
+- **Auto-pull**: a 5-minute pull is a menu toggle, off by default. The server runs it (stored in `app_settings`), so it keeps going with no tab open; open tabs check back every 30 s and redraw only when something changed. Notion webhooks need a public HTTPS endpoint, so polling is the only option.
 - **Conflicts**: per field, the newest edit wins.
 - **Delete in the gallery**: after a confirm, the post and its files are deleted at once and the Notion page moves to Notion's trash (the API can only trash; Notion empties trash after 30 days).
-- **Deleted in Notion**: a row missing from a pull flags its post **deleted-in-Notion**; it stays visible with a badge. The next Sync opens a dialog before processing (thumbnails, all ticked): delete the ticked posts, keep the rest. Kept posts become **local-only**: badge "Not in Notion", still editable, never prompted again, and "Re-add to Notion" in the pop-up creates a fresh row. Restoring the page from Notion's trash clears the flag on the next pull.
+- **Deleted in Notion**: a row missing from a pull flags its post **deleted-in-Notion**; it stays visible with a badge. The next Sync opens a dialog before processing (thumbnails, all ticked): delete the ticked posts, keep the rest. Kept posts become **local-only**: badge "Not in Notion", still editable, never prompted again, and "Re-add to Notion" in the pop-up creates a fresh row (the post keeps its first saved date, although Notion dates the row today). Restoring the page from Notion's trash clears the flag on the next pull. Deleting a post that is no longer in Notion never calls Notion.
 
 ### Sync job (processing)
 - Runs only from the Sync button, plus an optional nightly run (`NIGHTLY_SYNC`, off by default). New rows wait for the button.
@@ -84,7 +84,7 @@ v1 deliberately leaves out:
   1. **Normalise the URL**: strip tracking params (`?igsh=`, `&si=`), rewrite `youtu.be` / `shorts/` to `watch?v=`. A duplicate of an existing post → Failed "Duplicate of <link to first row>". A playlist or channel → Failed "not a single post".
   2. **Download**: yt-dlp first for every link (Instagram downloads wait 3–8 s each); when yt-dlp finds an Instagram image post or carousel (`NotASingleVideo`), gallery-dl takes over. Both read `DATA_DIR/cookies.txt`. Keep every item of a carousel, images included. Image-only posts are saved as images. A login wall (`LoginNeeded`) skips the rest of that site's posts for the run; gallery-dl's wall is named "Instagram image posts" so it never stops the reels.
   3. **Compress**: videos to H.264 + AAC MP4, ≤720p, CRF 26, 96 kbps audio, `+faststart`; skip the re-encode when the source is already H.264 ≤720p and small. Originals are discarded. Images to WebP q80, longest side ≤1440 px, keeping whichever file is smaller. Thumbnails are WebP, extracted from the video when none was downloaded.
-  4. **Transcript**: YouTube captions when present, else whisper. YouTube rate-limits caption downloads (HTTP 429) on their own, so a caption failure retries the download without them. A missing transcript is never a failure.
+  4. **Transcript**: YouTube captions when present, else whisper. YouTube rate-limits caption downloads (HTTP 429) on their own, so a caption failure retries the download without them. A missing transcript is never a failure. speaches answers HTTP 500 for audio over 30 s with no speech in it (music only), so a 500 counts as no speech; an unreachable whisper is still retried next Sync.
   5. **Summarise**: one Ollama call per post returns JSON `{summary, ai_tags}`: a 2–3 sentence English summary and 3–5 AI tags (lowercase, singular). Input: transcript, user caption, platform caption, every image of an image post, and `KEYFRAMES` (default 4, 0 disables) frames per video. The prompt carries the existing AI-tag vocabulary so tags get reused.
   6. **Finish**: write `Summary`, `AI Tags`, and `Status` = Done to Notion.
 - Failure rules:
@@ -106,7 +106,7 @@ The web page talks to the server only through the JSON API (`/api/posts`, `/api/
 - **Grid**: one 9:16 tile per post (landscape centre-cropped), ordered by saved date, static thumbnails, a "1/5" badge on carousels and an icon on image posts.
 - **Group by date**: buckets are exclusive, first match wins: Today, Yesterday, This Week (weeks start Monday), Last Week, then one heading per month ("October 2026"). Empty groups are hidden. Grouping runs in the browser, in its local time. The checkbox state is remembered per browser.
 - **Pop-up player**: plays local media; swipe or arrow keys move through a post's items and through the filtered posts. Edits Notion tags, caption, summary, AI tags; promotes an AI tag to a Notion tag; deletes; links to the original.
-- **Menu**: Sync button or progress bar, group-by-date, auto-pull toggle, disk usage.
+- **Menu**: the Sync button (or progress bar), then a ☰ panel with group-by-date, the auto-pull toggle and disk usage against `DISK_CAP_GB`.
 - Responsive for phone browsers over Tailscale; follows the system dark/light theme.
 
 ## Directory layout
@@ -115,11 +115,13 @@ The web page talks to the server only through the JSON API (`/api/posts`, `/api/
 app/                     FastAPI package
   main.py                app factory; mounts the API and the static web page
   config.py              Settings, read from environment variables
-  api/                   JSON API routes: health, pull, sync, posts + search; /media serves DATA_DIR/media
+  api/                   JSON API routes: health, pull, sync, posts + search, settings (auto-pull,
+                         disk usage); /media serves DATA_DIR/media
   db/                    SQLite connection, append-only MIGRATIONS, tag and search helpers
   web/                   static page, ES modules, no build: app.js (Sync, Add link, services), gallery.js
                          (grid, tag bar, search, date groups), player.js, editor.js (edit mode),
-                         tags.js, toast.js, app.css
+                         menu.js (☰ panel), deleted.js (deleted-in-Notion dialog), tags.js,
+                         toast.js, app.css
   notion/                client, schema check, pull; mirror.py runs every Notion conversation
                          (pull, push, create, trash) under one lock
   pipeline/              Sync: urls, download, media (ffmpeg), transcribe, summarise; post.py runs
@@ -169,6 +171,5 @@ build:   docker compose build
 
 - Whisper on the GPU: speaches' pinned CUDA images are built on CUDA 12.4 / 12.6 (latest release 0.9.0-rc.3, Dec 2025), and the RTX 5070 Ti (Blackwell) needs 12.8+. Whisper therefore runs on the CPU, which the Ryzen 7700 handles easily for `small.en`. Revisit if speaches ships a 12.8+ build.
 - Instagram image posts and carousels (gallery-dl) are untested against the real site until `cookies.txt` exists. Reels via yt-dlp work without one.
-- Not built yet: the deleted-in-Notion dialog before Sync (Sync skips those posts for now; kept posts would become local-only, with "Re-add to Notion"); the auto-pull toggle and disk usage in the menu.
 - N100 throughput is unmeasured: time a Sync on ZimaOS before deciding to move there.
 - Future: an iOS-only native app on the JSON API.
