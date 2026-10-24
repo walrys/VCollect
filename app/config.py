@@ -33,10 +33,19 @@ class Settings(BaseSettings):
     ollama_url: str = "http://ollama:11434"
     ollama_model: str = "qwen3.5:9b"
     whisper_url: str = "http://whisper:8000"
+    whisper_model: str = "Systran/faster-whisper-small.en"
+    keyframes: int = 4
+    max_duration_min: int = 0  # 0 = no limit
+    disk_cap_gb: float = 100
 
     @property
     def db_path(self) -> Path:
         return self.data_dir / "vcollect.db"
+
+    @property
+    def cookies_path(self) -> Path:
+        """Netscape cookies.txt with the Instagram and Reddit sessions."""
+        return self.data_dir / "cookies.txt"
 
     @property
     def notion_configured(self) -> bool:

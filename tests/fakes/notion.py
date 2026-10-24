@@ -52,6 +52,8 @@ class FakeNotion:
         self.query_calls = 0
         self.capped = False  # answer queries as if Notion hit its 10,000-row limit
         self.refuse_status_creation = False
+        self.refuse_page_updates = False  # answer page updates as if Notion were down
+        self.page_updates: list[tuple[str, dict]] = []
         self._rows: dict[str, dict] = {}
         self._ids = itertools.count(1)
         self._clock = datetime(2026, 10, 1, tzinfo=UTC)
@@ -74,6 +76,26 @@ class FakeNotion:
                 settings = {"options": self._merge_options(name, settings["options"])}
             self.properties[name] = prop(name, kind, settings)
         return await self.retrieve_data_source()
+
+    async def update_page(self, page_id: str, properties: dict) -> dict:
+        if self.refuse_page_updates:
+            raise NotionError(503, "service_unavailable", "Notion is down.")
+        self.page_updates.append((page_id, copy.deepcopy(properties)))
+        fields = {"Status": "status", "Summary": "summary", "Error": "error", "AI Tags": "ai_tags"}
+        row = self._rows[page_id]
+        for name, value in properties.items():
+            ((kind, content),) = value.items()
+            if kind == "status":
+                row[fields[name]] = content["name"]
+            elif kind == "rich_text":
+                row[fields[name]] = "".join(part["text"]["content"] for part in content)
+            elif kind == "multi_select":
+                row[fields[name]] = [option["name"] for option in content]
+        row["edited"] = self._tick()
+        return self._page(page_id, row)
+
+    def row(self, page_id: str) -> dict:
+        return self._rows[page_id]
 
     async def query_all_pages(self) -> tuple[list[dict], bool]:
         self.query_calls += 1
@@ -135,6 +157,7 @@ class FakeNotion:
         return {
             "object": "page",
             "id": page_id,
+            "url": f"https://app.notion.com/p/{page_id}",
             "created_time": row["created"],
             "last_edited_time": row["edited"],
             "in_trash": False,

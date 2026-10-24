@@ -6,9 +6,17 @@ from fastapi.testclient import TestClient
 from app import db
 from app.config import Settings
 from app.main import create_app
+from tests.fakes.samples import make_samples
 
 # Port 9 (discard) refuses connections, so the AI services read as unreachable.
 UNREACHABLE = "http://127.0.0.1:9"
+
+
+@pytest.fixture(autouse=True)
+def ignore_developer_env(monkeypatch):
+    """The container passes the developer's .env in as variables; tests start from defaults."""
+    for name in Settings.model_fields:
+        monkeypatch.delenv(name.upper(), raising=False)
 
 
 @pytest.fixture
@@ -27,6 +35,11 @@ def settings(tmp_path):
 def client(settings):
     with TestClient(create_app(settings)) as client:
         yield client
+
+
+@pytest.fixture(scope="session")
+def samples(tmp_path_factory):
+    return make_samples(tmp_path_factory.mktemp("samples"))
 
 
 @pytest.fixture

@@ -2,8 +2,9 @@
 
 from fastapi import APIRouter
 
-from app.api import health, notion
+from app.api import health, notion, sync
 
 router = APIRouter(prefix="/api")
 router.include_router(health.router)
 router.include_router(notion.router)
+router.include_router(sync.router)

@@ -42,6 +42,34 @@ MIGRATIONS: list[str] = [
         PRIMARY KEY (post_id, tag_id)
     );
     """,
+    # What the Sync pipeline learns and produces. Pulls never touch these columns.
+    """
+    ALTER TABLE posts ADD COLUMN notion_url TEXT NOT NULL DEFAULT '';
+    ALTER TABLE posts ADD COLUMN normalized_url TEXT;  -- the duplicate key; NULL if unusable
+    ALTER TABLE posts ADD COLUMN platform TEXT;        -- instagram | youtube | other
+    ALTER TABLE posts ADD COLUMN title TEXT NOT NULL DEFAULT '';
+    ALTER TABLE posts ADD COLUMN uploader TEXT NOT NULL DEFAULT '';
+    ALTER TABLE posts ADD COLUMN platform_caption TEXT NOT NULL DEFAULT '';
+    ALTER TABLE posts ADD COLUMN source_transcript TEXT;  -- the platform's subtitles, if any
+    ALTER TABLE posts ADD COLUMN transcript TEXT;         -- NULL = not yet; '' = no speech
+    ALTER TABLE posts ADD COLUMN thumb_file TEXT;         -- relative to DATA_DIR/media
+    ALTER TABLE posts ADD COLUMN media_ready INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE posts ADD COLUMN generated TEXT;  -- JSON summary + AI tags not yet in Notion
+    ALTER TABLE posts ADD COLUMN processed_at TEXT;
+
+    CREATE TABLE items (
+        id       INTEGER PRIMARY KEY,
+        post_id  INTEGER NOT NULL REFERENCES posts (id) ON DELETE CASCADE,
+        position INTEGER NOT NULL,
+        kind     TEXT NOT NULL CHECK (kind IN ('video', 'image')),
+        file     TEXT NOT NULL,  -- relative to DATA_DIR/media
+        width    INTEGER,
+        height   INTEGER,
+        duration REAL,
+        bytes    INTEGER NOT NULL,
+        UNIQUE (post_id, position)
+    );
+    """,
 ]
 
 
@@ -61,3 +89,24 @@ def migrate(conn: sqlite3.Connection) -> None:
         except sqlite3.Error:
             conn.rollback()
             raise
+
+
+def set_tags(conn: sqlite3.Connection, post_id: int, kind: str, names: list[str]) -> None:
+    """Replace a post's tags of one kind ("notion" or "ai")."""
+    conn.execute(
+        "DELETE FROM post_tags WHERE post_id = ?"
+        " AND tag_id IN (SELECT id FROM tags WHERE kind = ?)",
+        (post_id, kind),
+    )
+    for name in names:
+        # Tag names match case-insensitively, as in Notion; the latest spelling wins.
+        conn.execute(
+            "INSERT INTO tags (kind, name) VALUES (?, ?)"
+            " ON CONFLICT (kind, name) DO UPDATE SET name = excluded.name",
+            (kind, name),
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO post_tags (post_id, tag_id)"
+            " SELECT ?, id FROM tags WHERE kind = ? AND name = ?",
+            (post_id, kind, name),
+        )

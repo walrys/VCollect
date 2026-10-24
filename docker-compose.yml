@@ -26,7 +26,7 @@ services:
   whisper:
     image: ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cpu
     environment:
-      PRELOAD_MODELS: '["Systran/faster-whisper-small.en"]'
+      PRELOAD_MODELS: '["${WHISPER_MODEL:-Systran/faster-whisper-small.en}"]'
       WHISPER__COMPUTE_TYPE: int8
       ENABLE_UI: "false"
       LOG_LEVEL: info

@@ -29,6 +29,7 @@ class PullResult:
 @dataclass(frozen=True)
 class NotionRow:
     page_id: str
+    notion_url: str
     url: str
     user_caption: str
     summary: str
@@ -53,9 +54,11 @@ class Puller:
         self._last: PullResult | None = None
         self._last_at = 0.0
 
-    async def pull(self) -> PullResult:
+    async def pull(self, force: bool = False) -> PullResult:
+        """`force` skips reusing a recent pull, as Sync must see Notion as it is now."""
         async with self._lock:
-            if self._last and time.monotonic() - self._last_at < REUSE_SECONDS:
+            recent = self._last and time.monotonic() - self._last_at < REUSE_SECONDS
+            if recent and not force:
                 return self._last
             try:
                 if not self._schema_ready:
@@ -93,6 +96,7 @@ def parse_page(page: dict, props: NotionProps) -> NotionRow:
     status = (values.get(props.status) or {}).get("status") or {}
     return NotionRow(
         page_id=page["id"],
+        notion_url=page.get("url", ""),
         url=(values.get(props.url) or {}).get("url") or "",
         user_caption=_plain_text(values.get(props.caption)),
         summary=_plain_text(values.get(props.summary)),
@@ -110,10 +114,11 @@ def _upsert(conn: sqlite3.Connection, row: NotionRow) -> None:
     # Notion's values win outright until gallery edits (push) exist; then newest-wins per field.
     post_id = conn.execute(
         """
-        INSERT INTO posts (notion_page_id, url, user_caption, summary, status, error,
+        INSERT INTO posts (notion_page_id, notion_url, url, user_caption, summary, status, error,
                            saved_at, notion_edited_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (notion_page_id) DO UPDATE SET
+            notion_url = excluded.notion_url,
             url = excluded.url,
             user_caption = excluded.user_caption,
             summary = excluded.summary,
@@ -126,6 +131,7 @@ def _upsert(conn: sqlite3.Connection, row: NotionRow) -> None:
         """,
         (
             row.page_id,
+            row.notion_url,
             row.url,
             row.user_caption,
             row.summary,
@@ -135,28 +141,8 @@ def _upsert(conn: sqlite3.Connection, row: NotionRow) -> None:
             row.edited_at,
         ),
     ).fetchone()[0]
-    _set_tags(conn, post_id, "notion", row.tags)
-    _set_tags(conn, post_id, "ai", row.ai_tags)
-
-
-def _set_tags(conn: sqlite3.Connection, post_id: int, kind: str, names: list[str]) -> None:
-    conn.execute(
-        "DELETE FROM post_tags WHERE post_id = ?"
-        " AND tag_id IN (SELECT id FROM tags WHERE kind = ?)",
-        (post_id, kind),
-    )
-    for name in names:
-        # Tag names match case-insensitively, as in Notion; the latest spelling wins.
-        conn.execute(
-            "INSERT INTO tags (kind, name) VALUES (?, ?)"
-            " ON CONFLICT (kind, name) DO UPDATE SET name = excluded.name",
-            (kind, name),
-        )
-        conn.execute(
-            "INSERT OR IGNORE INTO post_tags (post_id, tag_id)"
-            " SELECT ?, id FROM tags WHERE kind = ? AND name = ?",
-            (post_id, kind, name),
-        )
+    db.set_tags(conn, post_id, "notion", row.tags)
+    db.set_tags(conn, post_id, "ai", row.ai_tags)
 
 
 def _flag_deleted(conn: sqlite3.Connection, seen: set[str]) -> None:

@@ -55,6 +55,9 @@ class NotionClient:
             "PATCH", f"/data_sources/{self.data_source_id}", {"properties": properties}
         )
 
+    async def update_page(self, page_id: str, properties: dict) -> dict:
+        return await self._request("PATCH", f"/pages/{page_id}", {"properties": properties})
+
     async def query_all_pages(self) -> tuple[list[dict], bool]:
         """Every row, plus whether the set is complete (Notion caps a query at 10,000)."""
         pages: list[dict] = []
