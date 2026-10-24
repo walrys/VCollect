@@ -12,6 +12,36 @@ MIGRATIONS: list[str] = [
         value TEXT NOT NULL
     );
     """,
+    # One post per Notion row, mirroring its properties. The pipeline adds its own columns.
+    """
+    CREATE TABLE posts (
+        id               INTEGER PRIMARY KEY,
+        notion_page_id   TEXT UNIQUE,  -- NULL once local-only
+        url              TEXT NOT NULL DEFAULT '',
+        user_caption     TEXT NOT NULL DEFAULT '',
+        summary          TEXT NOT NULL DEFAULT '',
+        status           TEXT NOT NULL DEFAULT 'Not started' COLLATE NOCASE,
+        error            TEXT NOT NULL DEFAULT '',
+        saved_at         TEXT NOT NULL,  -- Notion created_time, UTC ISO 8601
+        notion_edited_at TEXT,           -- Notion last_edited_time at the last pull
+        notion_state     TEXT NOT NULL DEFAULT 'synced'
+                         CHECK (notion_state IN ('synced', 'deleted_in_notion', 'local_only'))
+    );
+
+    -- Notion tags and AI tags never mix: same name, different kind, different tag.
+    CREATE TABLE tags (
+        id   INTEGER PRIMARY KEY,
+        kind TEXT NOT NULL CHECK (kind IN ('notion', 'ai')),
+        name TEXT NOT NULL COLLATE NOCASE,
+        UNIQUE (kind, name)
+    );
+
+    CREATE TABLE post_tags (
+        post_id INTEGER NOT NULL REFERENCES posts (id) ON DELETE CASCADE,
+        tag_id  INTEGER NOT NULL REFERENCES tags (id) ON DELETE CASCADE,
+        PRIMARY KEY (post_id, tag_id)
+    );
+    """,
 ]
 
 

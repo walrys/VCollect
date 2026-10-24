@@ -16,7 +16,7 @@ def test_gallery_page_is_served(client):
 def test_health_reports_unconfigured_and_unreachable(client):
     body = client.get("/api/health").json()
     assert body == {
-        "notion_configured": False,
+        "notion": {"configured": False, "error": None},
         "ollama": {"reachable": False, "model": "qwen3.5:9b", "model_ready": False},
         "whisper": {"reachable": False},
     }

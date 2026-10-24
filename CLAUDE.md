@@ -63,9 +63,9 @@ v1 deliberately leaves out:
 - Every setting lives in `.env`; `.env.example` lists them with defaults.
 
 ### Notion data source
-- Existing properties: `URL`, `Caption` (the user's own note), `Tags` (multi-select), and the built-in created time as the **saved date**.
+- The user's database is "Saved Video Links" (163 rows on 2026-10-24, mostly Instagram reels). Existing properties: `Link` (url), `Caption` (the title column, holding the user's own note), `Tags` (multi-select), `Created time`, and an unused `💾` checkbox the app ignores. The page's built-in created time is the **saved date**.
 - On startup the app adds any missing: `Status` (Not started / Done / Failed), `Error` (text), `Summary` (text), `AI Tags` (multi-select). If the API refuses to create the Status type, stop with a message asking the user to add it by hand.
-- Property names are configurable in `.env`, defaulting to the names above.
+- Property names are configurable in `.env` (`NOTION_PROP_*`). The defaults are generic (`URL`, …), so this database needs `NOTION_PROP_URL=Link`.
 - Transcripts and media stay local; Notion never receives them.
 
 ### Sync with Notion (two-way)
@@ -115,12 +115,12 @@ The web page talks to the server only through the JSON API (`/api/posts`, `/api/
 app/                     FastAPI package
   main.py                app factory; mounts the API and the static web page
   config.py              Settings, read from environment variables
-  api/                   JSON API routes (posts, tags, sync, media to come)
+  api/                   JSON API routes: health, pull (posts, tags, sync, media to come)
   db/                    SQLite connection and append-only MIGRATIONS
   web/                   static page: index.html, app.js, app.css
-  notion/                (to come) Notion client, schema check, pull and push
+  notion/                Notion client, schema check, pull (push to come)
   pipeline/              (to come) Sync job steps: normalise, download, compress, transcribe, summarise
-tests/                   pytest; fakes/ and fixtures/ (sample clip) arrive with the pipeline
+tests/                   pytest; fakes/ holds FakeNotion (fixtures/ sample clip arrives with the pipeline)
 docker/entrypoint.sh     refreshes yt-dlp and gallery-dl on every server start
 docker-compose*.yml      base stack, dev override, GPU override
 .env.example             every setting, plus the per-machine COMPOSE_FILE
@@ -159,9 +159,6 @@ build:   docker compose build
 
 ## Open questions
 
-- Backlog size unconfirmed: assumed a few hundred rows; the design holds for thousands.
-- Unverified whether the Notion API can create a Status-type property (fallback already decided).
 - Whisper on the GPU: speaches' pinned CUDA images are built on CUDA 12.4 / 12.6 (latest release 0.9.0-rc.3, Dec 2025), and the RTX 5070 Ti (Blackwell) needs 12.8+. Whisper therefore runs on the CPU, which the Ryzen 7700 handles easily for `small.en`. Revisit if speaches ships a 12.8+ build.
-- Ollama on the RTX 5070 Ti is unverified until the first full `docker compose up`.
 - N100 throughput is unmeasured: time a Sync on ZimaOS before deciding to move there.
 - Future: an iOS-only native app on the JSON API.

@@ -1,6 +1,9 @@
+from contextlib import closing
+
 import pytest
 from fastapi.testclient import TestClient
 
+from app import db
 from app.config import Settings
 from app.main import create_app
 
@@ -24,3 +27,10 @@ def settings(tmp_path):
 def client(settings):
     with TestClient(create_app(settings)) as client:
         yield client
+
+
+@pytest.fixture
+def conn(tmp_path):
+    with closing(db.connect(tmp_path / "test.db")) as conn:
+        db.migrate(conn)
+        yield conn

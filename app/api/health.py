@@ -11,13 +11,17 @@ router = APIRouter()
 @router.get("/health")
 async def health(request: Request) -> dict:
     settings = request.app.state.settings
+    puller = request.app.state.puller
     async with AsyncClient(timeout=2) as client:
         ollama_models, whisper_up = await asyncio.gather(
             _ollama_models(client, settings.ollama_url),
             _answers(client, f"{settings.whisper_url}/health"),
         )
     return {
-        "notion_configured": bool(settings.notion_token and settings.notion_data_source_id),
+        "notion": {
+            "configured": puller is not None,
+            "error": puller.error if puller else None,
+        },
         "ollama": {
             "reachable": ollama_models is not None,
             "model": settings.ollama_model,
