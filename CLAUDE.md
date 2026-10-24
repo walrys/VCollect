@@ -11,7 +11,7 @@ A web app that converts a growing database of saved video URLs on Notion into a 
 - Using Notion API, grab data source which contains video urls, captions, tags, created date (date url was saved)
 - Only processing rows that have not been marked as complete,
 For every row:
-1) Download video with all metadata from URL using yt-dlp (gallery-dl for Instagram)
+1) Download video with all metadata from URL using yt-dlp (gallery-dl for Instagram image posts)
 2) Compress video using ffmpeg for local storage
 3) Extract thumbnails from video if the downloader did not grab it
 4) Summarise video transcript (if present) into a AI summarised description
@@ -45,7 +45,7 @@ v1 deliberately leaves out:
 
 - Python 3.12 + FastAPI, SQLite with FTS5, a static HTML page + plain JS (no build step) calling the app's own JSON API.
 - yt-dlp: YouTube and every non-Instagram URL. Self-updates on container start and nightly, since its site extractors break often. Needs Deno (bundled in the image) to solve YouTube's JavaScript challenges.
-- gallery-dl: every Instagram URL (reels, image posts, mixed carousels); yt-dlp only fetches video.
+- gallery-dl: Instagram image posts and carousels, which yt-dlp cannot fetch (yt-dlp handles reels, without a login).
 - ffmpeg: compression, keyframes, thumbnails.
 - Ollama + `qwen3.5` (vision-capable, multilingual): summaries and AI tags.
 - whisper via speaches (OpenAI-compatible server), model `Systran/faster-whisper-small.en`: transcripts.
@@ -82,7 +82,7 @@ v1 deliberately leaves out:
 - Rows to process: `Status` = Not started.
 - Per row:
   1. **Normalise the URL**: strip tracking params (`?igsh=`, `&si=`), rewrite `youtu.be` / `shorts/` to `watch?v=`. A duplicate of an existing post → Failed "Duplicate of <link to first row>". A playlist or channel → Failed "not a single post".
-  2. **Download**: gallery-dl for Instagram, yt-dlp for the rest, both reading `DATA_DIR/cookies.txt`. Keep every item of a carousel, images included. Image-only posts are saved as images. A login wall (`LoginNeeded`) skips the rest of that site's posts for the run.
+  2. **Download**: yt-dlp first for every link (Instagram downloads wait 3–8 s each); when yt-dlp finds an Instagram image post or carousel (`NotASingleVideo`), gallery-dl takes over. Both read `DATA_DIR/cookies.txt`. Keep every item of a carousel, images included. Image-only posts are saved as images. A login wall (`LoginNeeded`) skips the rest of that site's posts for the run; gallery-dl's wall is named "Instagram image posts" so it never stops the reels.
   3. **Compress**: videos to H.264 + AAC MP4, ≤720p, CRF 26, 96 kbps audio, `+faststart`; skip the re-encode when the source is already H.264 ≤720p and small. Originals are discarded. Images to WebP q80, longest side ≤1440 px, keeping whichever file is smaller. Thumbnails are WebP, extracted from the video when none was downloaded.
   4. **Transcript**: YouTube captions when present, else whisper. YouTube rate-limits caption downloads (HTTP 429) on their own, so a caption failure retries the download without them. A missing transcript is never a failure.
   5. **Summarise**: one Ollama call per post returns JSON `{summary, ai_tags}`: a 2–3 sentence English summary and 3–5 AI tags (lowercase, singular). Input: transcript, user caption, platform caption, every image of an image post, and `KEYFRAMES` (default 4, 0 disables) frames per video. The prompt carries the existing AI-tag vocabulary so tags get reused.
@@ -157,13 +157,13 @@ build:   docker compose build
 - **Notion tags** vs **AI tags**: separate types in separate Notion properties and separate tag-bar rows. Promoting copies an AI tag into Notion tags.
 - **Pull** = Notion → app. **Push** = gallery edit → Notion. **Sync** = the button: pull, the deleted-in-Notion prompt, then process new rows.
 - **Deleted-in-Notion** and **local-only**: post states defined under Sync with Notion.
-- Instagram and Reddit refuse downloads without a logged-in session; `DATA_DIR/cookies.txt` holds both, exported from secondary accounts, since Instagram flags scraping accounts. YouTube works without one.
+- Logins: YouTube and Instagram reels (via yt-dlp) download without one. Instagram image posts and carousels (via gallery-dl) and Reddit need a session in `DATA_DIR/cookies.txt`, exported from secondary accounts, since Instagram flags scraping accounts.
 - The pipeline writes Notion first and local copies second (`posts.generated` holds a summary until Notion has it), so a pull mid-Sync can never undo a finished step.
 
 ## Open questions
 
 - Whisper on the GPU: speaches' pinned CUDA images are built on CUDA 12.4 / 12.6 (latest release 0.9.0-rc.3, Dec 2025), and the RTX 5070 Ti (Blackwell) needs 12.8+. Whisper therefore runs on the CPU, which the Ryzen 7700 handles easily for `small.en`. Revisit if speaches ships a 12.8+ build.
-- The Instagram path (gallery-dl, carousels, image posts) is untested against the real site until `cookies.txt` exists.
+- Instagram image posts and carousels (gallery-dl) are untested against the real site until `cookies.txt` exists. Reels via yt-dlp work without one.
 - The deleted-in-Notion dialog before Sync is not built yet; Sync skips those posts for now.
 - N100 throughput is unmeasured: time a Sync on ZimaOS before deciding to move there.
 - Future: an iOS-only native app on the JSON API.

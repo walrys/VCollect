@@ -1,7 +1,8 @@
-"""Downloaders: gallery-dl for Instagram, yt-dlp for everything else."""
+"""Downloaders: yt-dlp for videos, gallery-dl for Instagram image posts and carousels."""
 
 import asyncio
 import json
+import shutil
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -13,6 +14,10 @@ from app.pipeline.urls import PostUrl
 
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".webm", ".mov", ".m4v"}
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+
+# gallery-dl needs a login where yt-dlp does not, so its login wall gets its own site name:
+# it must never stop the run from fetching the reels yt-dlp manages without one.
+INSTAGRAM_IMAGES = "Instagram image posts"
 
 # Lower-cased fragments of downloader errors.
 LOGIN_HINTS = ("login", "log in", "sign in", "authentication is required", "--cookies", "401")
@@ -57,6 +62,10 @@ class Download:
         return cls(**{**data, "items": [RawItem(**item) for item in data["items"]]})
 
 
+class NotASingleVideo(Exception):
+    """yt-dlp found an Instagram image post or carousel, which gallery-dl handles."""
+
+
 class Downloader:
     def __init__(self, cookies: Path, max_duration_min: int = 0):
         self.cookies = cookies
@@ -64,9 +73,12 @@ class Downloader:
 
     async def download(self, post: PostUrl, dest: Path) -> Download:
         dest.mkdir(parents=True, exist_ok=True)
-        if post.platform == "instagram":
+        try:
+            return await asyncio.to_thread(self._yt_dlp, post, dest)
+        except NotASingleVideo:
+            shutil.rmtree(dest)
+            dest.mkdir(parents=True)
             return await self._gallery_dl(post, dest)
-        return await asyncio.to_thread(self._yt_dlp, post, dest)
 
     async def _gallery_dl(self, post: PostUrl, dest: Path) -> Download:
         args = ["gallery-dl", "--directory", str(dest), "--filename", "{num:>02}.{extension}"]
@@ -79,7 +91,7 @@ class Downloader:
         output = (await process.communicate())[0].decode(errors="replace")
         items = _media_in(dest)
         if process.returncode != 0 or not items:
-            raise classify(output, post.site)
+            raise classify(output, INSTAGRAM_IMAGES)
 
         metadata_files = sorted(dest.glob("*.json"))
         metadata = json.loads(metadata_files[0].read_text()) if metadata_files else {}
@@ -111,9 +123,14 @@ class Downloader:
         }
         if self.cookies.exists():
             options["cookiefile"] = str(self.cookies)
+        if post.platform == "instagram":
+            # Instagram blocks anonymous clients that ask too fast; a backlog is hundreds of reels.
+            options |= {"sleep_interval": 3, "max_sleep_interval": 8}
         try:
             info = self._yt_dlp_fetch(post, options)
         except yt_dlp.utils.DownloadError as error:
+            if post.platform == "instagram" and "no video formats found" in str(error).lower():
+                raise NotASingleVideo from error
             if "subtitles" not in str(error).lower():
                 raise classify(str(error), post.site) from error
             # Subtitles are a bonus (YouTube rate-limits them on their own); whisper covers.
@@ -141,6 +158,8 @@ class Downloader:
         with yt_dlp.YoutubeDL(options) as ydl:
             info = ydl.extract_info(post.url, download=False, process=False)
             if info.get("_type") in {"playlist", "multi_video"}:
+                if post.platform == "instagram":
+                    raise NotASingleVideo  # a carousel
                 raise PostFailed("Not a single post: a playlist or channel")
             minutes = (info.get("duration") or 0) / 60
             if self.max_duration_min and minutes > self.max_duration_min:
