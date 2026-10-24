@@ -1,0 +1,172 @@
+# VCollect
+
+## Overview
+
+A web app that converts a growing database of saved video URLs on Notion into a managed video collection with a web gallery / interface.
+
+
+## Goals
+
+### PROCESSING
+- Using Notion API, grab data source which contains video urls, captions, tags, created date (date url was saved)
+- Only processing rows that have not been marked as complete,
+For every row:
+1) Download video with all metadata from URL using yt-dlp (gallery-dl for Instagram)
+2) Compress video using ffmpeg for local storage
+3) Extract thumbnails from video if the downloader did not grab it
+4) Summarise video transcript (if present) into a AI summarised description
+5) Using Notion API, mark item in data table as complete when all is done
+
+### Gallery Web Page:
+- VCOLLECT (header)
+- At the top of the page is the main quick search bar
+- Beneath it are tags you can click on to add to the search, sorted by most commonly used tags
+- Display all saved videos in a grid of thumbnails in a timeline order (latest to oldest)
+- Adding tags instantly filters the thumbnails visible in the grid
+- Typing in to search can take a second or two
+
+Menu options (top right)
+- "Sync" button. This button will trigger the PROCESSING steps listed above. If currently processing, a progress bar should show in place of the button.
+- Group-by-Date Checkbox: When enabled, adds sub-headings to group the thumbnails. Group by -> Today, Yesterday, This Week, Last Week, By Month
+
+Detailed decisions for both live under Architecture.
+
+## Non-goals
+
+v1 deliberately leaves out:
+- Login and multiple users: one user, on a private network (LAN or Tailscale).
+- Paid services of any kind: every AI step runs locally (Ollama, whisper).
+- Public share links.
+- Search by meaning: search is keyword full-text.
+- Processing without pressing Sync: the nightly run exists but ships off.
+- A native app. An iOS-only app is a future consideration; the JSON API is built for it.
+
+## Tech stack
+
+- Python 3.12 + FastAPI, SQLite with FTS5, a static HTML page + plain JS (no build step) calling the app's own JSON API.
+- yt-dlp: YouTube and every non-Instagram URL. Self-updates on container start and nightly, since its site extractors break often.
+- gallery-dl: every Instagram URL (reels, image posts, mixed carousels); yt-dlp only fetches video.
+- ffmpeg: compression, keyframes, thumbnails.
+- Ollama + `qwen3.5` (vision-capable, multilingual): summaries and AI tags.
+- whisper (OpenAI-compatible server, English-only model): transcripts.
+- Docker Compose. Runs on the dev PC first (Ryzen 7 7700, 31 GB RAM, RTX 5070 Ti 16 GB, Docker Desktop on WSL2); may move to ZimaOS (Intel N100, ~8 GB free RAM, CPU-only AI).
+
+## Architecture
+
+### Services (`docker-compose.yml`)
+- `app`: FastAPI web server and the background worker in one container, with ffmpeg, yt-dlp, gallery-dl.
+- `ollama`: `qwen3.5:9b` on the PC GPU, `qwen3.5:4b` or `2b` on the N100 (`OLLAMA_MODEL`).
+- `whisper`: local speech-to-text, English-only model.
+- `docker-compose.gpu.yml` override gives `ollama` and `whisper` the NVIDIA GPU (dev PC only); CPU is the default.
+- `OLLAMA_URL` / `WHISPER_URL` are config, so an `app` on ZimaOS can send AI work to the PC when it is on.
+- `DATA_DIR` (default `./data`, gitignored) holds the SQLite DB and all media. Moving machines means copying this folder.
+- Every setting lives in `.env`; `.env.example` lists them with defaults.
+
+### Notion data source
+- Existing properties: `URL`, `Caption` (the user's own note), `Tags` (multi-select), and the built-in created time as the **saved date**.
+- On startup the app adds any missing: `Status` (Not started / Done / Failed), `Error` (text), `Summary` (text), `AI Tags` (multi-select). If the API refuses to create the Status type, stop with a message asking the user to add it by hand.
+- Property names are configurable in `.env`, defaulting to the names above.
+- Transcripts and media stay local; Notion never receives them.
+
+### Sync with Notion (two-way)
+- **Push**: every gallery edit (Notion tags including brand-new options, caption, summary, AI tags, delete, Add URL) goes to Notion as soon as it is saved. If Notion is unreachable the edit queues and flushes on the next Sync.
+- **Pull**: a full read of every row (100 per request) on app launch, on every page load or refresh, and at the start of every Sync. A load within 60 s of the last pull reuses it (Notion allows ~3 requests/s). Pulls run in the background: the page renders from SQLite and updates in place. Each pull also refreshes the "Sync (N new)" count.
+- **Auto-pull**: a 5-minute pull is a menu toggle, off by default. Notion webhooks need a public HTTPS endpoint, so polling is the only option.
+- **Conflicts**: per field, the newest edit wins.
+- **Delete in the gallery**: after a confirm, the post and its files are deleted at once and the Notion page moves to Notion's trash (the API can only trash; Notion empties trash after 30 days).
+- **Deleted in Notion**: a row missing from a pull flags its post **deleted-in-Notion**; it stays visible with a badge. The next Sync opens a dialog before processing (thumbnails, all ticked): delete the ticked posts, keep the rest. Kept posts become **local-only**: badge "Not in Notion", still editable, never prompted again, and "Re-add to Notion" in the pop-up creates a fresh row. Restoring the page from Notion's trash clears the flag on the next pull.
+
+### Sync job (processing)
+- Runs only from the Sync button, plus an optional nightly run (`NIGHTLY_SYNC`, off by default). New rows wait for the button.
+- One job at a time, one row at a time (platform rate limits). Server-side, so it survives closing the tab. Every open tab shows the progress bar ("12 / 40 · compressing <title>") with a cancel. Posts join the grid as each finishes.
+- Rows to process: `Status` = Not started.
+- Per row:
+  1. **Normalise the URL**: strip tracking params (`?igsh=`, `&si=`), rewrite `youtu.be` / `shorts/` to `watch?v=`. A duplicate of an existing post → Failed "Duplicate of <link to first row>". A playlist or channel → Failed "not a single post".
+  2. **Download**: gallery-dl for Instagram (with `cookies.txt` from a secondary Instagram account), yt-dlp for the rest. Keep every item of a carousel, images included. Image-only posts are saved as images.
+  3. **Compress**: videos to H.264 + AAC MP4, ≤720p, CRF 26, 96 kbps audio, `+faststart`; skip the re-encode when the source is already H.264 ≤720p and small. Originals are discarded. Images to WebP q80, longest side ≤1440 px, keeping whichever file is smaller. Thumbnails are WebP, extracted from the video when none was downloaded.
+  4. **Transcript**: YouTube captions when present, else whisper. A missing transcript is never a failure.
+  5. **Summarise**: one Ollama call per post returns JSON `{summary, ai_tags}`: a 2–3 sentence English summary and 3–5 AI tags (lowercase, singular). Input: transcript, user caption, platform caption, every image of an image post, and `KEYFRAMES` (default 4, 0 disables) frames per video. The prompt carries the existing AI-tag vocabulary so tags get reused.
+  6. **Finish**: write `Summary`, `AI Tags`, and `Status` = Done to Notion.
+- Failure rules:
+  - Every step is idempotent: a finished step's output is reused, never redone.
+  - Done only when every step succeeds.
+  - Transient errors (network, rate limit, Ollama or whisper down) leave the row Not started for the next Sync.
+  - Permanent errors (removed, private, unsupported) → Failed with the reason in `Error`. Failed rows stay skipped until reset in Notion.
+  - A post appears in the gallery once its media and thumbnail are ready; its summary can follow later.
+- `MAX_DURATION_MIN` (off by default): longer videos → Failed "too long".
+- Disk cap 100 GB: the menu shows usage; Sync refuses new downloads above 95 GB and deletes nothing on its own.
+
+### JSON API
+The web page talks to the server only through the JSON API (`/api/posts`, `/api/tags`, `/api/sync`, …), so a future iOS app reuses it unchanged. Media is served with HTTP range requests (seeking, iOS AVPlayer).
+
+### Gallery details
+- Header also holds an **Add URL** box that creates a Notion row (warns on duplicates).
+- **Search**: server-side, debounced, keyword FTS5 with prefix matching over title, user caption, platform caption, summary, transcript, uploader, AI tags. Results keep timeline order and combine with selected tags as AND.
+- **Tag bar**: Notion tags as filled chips; AI tags in a second row as outlined chips. Top ~20 plus "show all". Filtering is instant (client-side) and AND across tags. Once tags are selected, the bar shows only tags present in the current results, with counts.
+- **Grid**: one 9:16 tile per post (landscape centre-cropped), ordered by saved date, static thumbnails, a "1/5" badge on carousels and an icon on image posts.
+- **Group by date**: buckets are exclusive, first match wins: Today, Yesterday, This Week (weeks start Monday), Last Week, then one heading per month ("October 2026"). Empty groups are hidden. Local timezone (`TZ`). The checkbox state is remembered per browser.
+- **Pop-up player**: plays local media; swipe or arrow keys move through a post's items and through the filtered posts. Edits Notion tags, caption, summary, AI tags; promotes an AI tag to a Notion tag; deletes; links to the original.
+- **Menu**: Sync button or progress bar, group-by-date, auto-pull toggle, disk usage.
+- Responsive for phone browsers over Tailscale; follows the system dark/light theme.
+
+## Directory layout
+
+Planned; update once scaffolded.
+
+```
+app/                 FastAPI package
+  main.py            app factory; mounts the API and the static web page
+  api/               JSON API routes: posts, tags, sync, media
+  notion/            Notion client, schema check, pull and push
+  pipeline/          Sync job steps: normalise, download, compress, transcribe, summarise
+  db/                SQLite schema, FTS5, queries
+  web/               static page: index.html, app.js, app.css
+tests/
+  fakes/             fake Notion and downloaders
+  fixtures/          tiny sample clip
+Dockerfile
+docker-compose.yml
+docker-compose.gpu.yml
+.env.example
+data/                DATA_DIR default (gitignored)
+```
+
+## Commands
+
+Planned; update once scaffolded.
+
+```
+install: docker compose build
+         docker compose exec ollama ollama pull qwen3.5:9b        # once per machine, stack running
+run:     docker compose -f docker-compose.yml -f docker-compose.gpu.yml up   # dev PC (GPU)
+         docker compose up                                        # CPU-only host (ZimaOS)
+test:    docker compose run --rm app pytest
+lint:    docker compose run --rm app sh -c "ruff check . && ruff format --check ."
+build:   docker compose build
+```
+
+## Conventions
+
+- Develop inside Docker: source mounted, uvicorn reloads on save. The Windows host needs only Docker Desktop.
+- Each external system (Notion, gallery-dl, yt-dlp, ffmpeg, Ollama, whisper) sits behind a small interface so tests swap in a fake.
+- Tests run offline: fakes for Notion and the downloaders, plus the clip in `tests/fixtures/` for real ffmpeg and whisper checks.
+- Pipeline steps check for their own output first, so a rerun resumes.
+- Lint and format with ruff.
+
+## Domain notes
+
+- **Post**: one Notion row ↔ one post, holding one or more **items** (video or image). Tiles, summaries, and AI tags are per post.
+- **Saved date**: the Notion row's created time. It drives ordering and date groups; the platform upload date is metadata only.
+- **User caption** vs **platform caption**: `Caption` in Notion is the user's note; the platform caption comes from the downloader. Stored separately, both searchable.
+- **Notion tags** vs **AI tags**: separate types in separate Notion properties and separate tag-bar rows. Promoting copies an AI tag into Notion tags.
+- **Pull** = Notion → app. **Push** = gallery edit → Notion. **Sync** = the button: pull, the deleted-in-Notion prompt, then process new rows.
+- **Deleted-in-Notion** and **local-only**: post states defined under Sync with Notion.
+- Instagram needs a logged-in session for downloads; use a secondary account, since Instagram flags scraping accounts.
+
+## Open questions
+
+- Backlog size unconfirmed: assumed a few hundred rows; the design holds for thousands.
+- Unverified whether the Notion API can create a Status-type property (fallback already decided).
+- The RTX 5070 Ti is Blackwell: the whisper and Ollama images need CUDA 12.8+ builds. Verify when scaffolding.
+- N100 throughput is unmeasured: time a Sync on ZimaOS before deciding to move there.
+- Future: an iOS-only native app on the JSON API.
