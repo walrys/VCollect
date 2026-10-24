@@ -44,11 +44,11 @@ v1 deliberately leaves out:
 ## Tech stack
 
 - Python 3.12 + FastAPI, SQLite with FTS5, a static HTML page + plain JS (no build step) calling the app's own JSON API.
-- yt-dlp: YouTube and every non-Instagram URL. Self-updates on container start and nightly, since its site extractors break often.
+- yt-dlp: YouTube and every non-Instagram URL. Self-updates on container start and nightly, since its site extractors break often. Needs Deno (bundled in the image) to solve YouTube's JavaScript challenges.
 - gallery-dl: every Instagram URL (reels, image posts, mixed carousels); yt-dlp only fetches video.
 - ffmpeg: compression, keyframes, thumbnails.
 - Ollama + `qwen3.5` (vision-capable, multilingual): summaries and AI tags.
-- whisper (OpenAI-compatible server, English-only model): transcripts.
+- whisper via speaches (OpenAI-compatible server), model `Systran/faster-whisper-small.en`: transcripts.
 - Docker Compose. Runs on the dev PC first (Ryzen 7 7700, 31 GB RAM, RTX 5070 Ti 16 GB, Docker Desktop on WSL2); may move to ZimaOS (Intel N100, ~8 GB free RAM, CPU-only AI).
 
 ## Architecture
@@ -56,8 +56,8 @@ v1 deliberately leaves out:
 ### Services (`docker-compose.yml`)
 - `app`: FastAPI web server and the background worker in one container, with ffmpeg, yt-dlp, gallery-dl.
 - `ollama`: `qwen3.5:9b` on the PC GPU, `qwen3.5:4b` or `2b` on the N100 (`OLLAMA_MODEL`).
-- `whisper`: local speech-to-text, English-only model.
-- `docker-compose.gpu.yml` override gives `ollama` and `whisper` the NVIDIA GPU (dev PC only); CPU is the default.
+- `whisper`: local speech-to-text, on the CPU on every machine (see Open questions).
+- `docker-compose.gpu.yml` gives `ollama` the NVIDIA GPU (dev PC only). `docker-compose.dev.yml` mounts the source and reloads on save. Each machine's `.env` picks its files through `COMPOSE_FILE`, so every command is plain `docker compose …`.
 - `OLLAMA_URL` / `WHISPER_URL` are config, so an `app` on ZimaOS can send AI work to the PC when it is on.
 - `DATA_DIR` (default `./data`, gitignored) holds the SQLite DB and all media. Moving machines means copying this folder.
 - Every setting lives in `.env`; `.env.example` lists them with defaults.
@@ -111,37 +111,31 @@ The web page talks to the server only through the JSON API (`/api/posts`, `/api/
 
 ## Directory layout
 
-Planned; update once scaffolded.
-
 ```
-app/                 FastAPI package
-  main.py            app factory; mounts the API and the static web page
-  api/               JSON API routes: posts, tags, sync, media
-  notion/            Notion client, schema check, pull and push
-  pipeline/          Sync job steps: normalise, download, compress, transcribe, summarise
-  db/                SQLite schema, FTS5, queries
-  web/               static page: index.html, app.js, app.css
-tests/
-  fakes/             fake Notion and downloaders
-  fixtures/          tiny sample clip
-Dockerfile
-docker-compose.yml
-docker-compose.gpu.yml
-.env.example
-data/                DATA_DIR default (gitignored)
+app/                     FastAPI package
+  main.py                app factory; mounts the API and the static web page
+  config.py              Settings, read from environment variables
+  api/                   JSON API routes (posts, tags, sync, media to come)
+  db/                    SQLite connection and append-only MIGRATIONS
+  web/                   static page: index.html, app.js, app.css
+  notion/                (to come) Notion client, schema check, pull and push
+  pipeline/              (to come) Sync job steps: normalise, download, compress, transcribe, summarise
+tests/                   pytest; fakes/ and fixtures/ (sample clip) arrive with the pipeline
+docker/entrypoint.sh     refreshes yt-dlp and gallery-dl on every server start
+docker-compose*.yml      base stack, dev override, GPU override
+.env.example             every setting, plus the per-machine COMPOSE_FILE
+data/                    DATA_DIR default (gitignored)
 ```
 
 ## Commands
 
-Planned; update once scaffolded.
-
 ```
-install: docker compose build
-         docker compose exec ollama ollama pull qwen3.5:9b        # once per machine, stack running
-run:     docker compose -f docker-compose.yml -f docker-compose.gpu.yml up   # dev PC (GPU)
-         docker compose up                                        # CPU-only host (ZimaOS)
-test:    docker compose run --rm app pytest
-lint:    docker compose run --rm app sh -c "ruff check . && ruff format --check ."
+install: cp .env.example .env              # then fill in; set COMPOSE_FILE for this machine
+         docker compose build
+         docker compose up -d ollama && docker compose exec ollama ollama pull qwen3.5:9b   # once per machine
+run:     docker compose up                 # gallery at http://localhost:8000
+test:    docker compose run --rm --no-deps app pytest
+lint:    docker compose run --rm --no-deps app sh -c "ruff check . && ruff format --check ."
 build:   docker compose build
 ```
 
@@ -167,6 +161,7 @@ build:   docker compose build
 
 - Backlog size unconfirmed: assumed a few hundred rows; the design holds for thousands.
 - Unverified whether the Notion API can create a Status-type property (fallback already decided).
-- The RTX 5070 Ti is Blackwell: the whisper and Ollama images need CUDA 12.8+ builds. Verify when scaffolding.
+- Whisper on the GPU: speaches' pinned CUDA images are built on CUDA 12.4 / 12.6 (latest release 0.9.0-rc.3, Dec 2025), and the RTX 5070 Ti (Blackwell) needs 12.8+. Whisper therefore runs on the CPU, which the Ryzen 7700 handles easily for `small.en`. Revisit if speaches ships a 12.8+ build.
+- Ollama on the RTX 5070 Ti is unverified until the first full `docker compose up`.
 - N100 throughput is unmeasured: time a Sync on ZimaOS before deciding to move there.
 - Future: an iOS-only native app on the JSON API.

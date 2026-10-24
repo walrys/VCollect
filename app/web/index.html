@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>VCollect</title>
+  <link rel="stylesheet" href="/app.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <h1 class="wordmark">VCOLLECT</h1>
+    <nav class="menu">
+      <label class="toggle">
+        <input type="checkbox" id="group-by-date" disabled>
+        Group by date
+      </label>
+      <button id="sync" class="button" type="button" disabled>Sync</button>
+    </nav>
+  </header>
+
+  <main class="page">
+    <input id="search" class="search" type="search" placeholder="Search your collection"
+           autocomplete="off" aria-label="Search">
+    <div id="tags" class="tags"></div>
+    <section id="grid" class="grid" aria-live="polite"></section>
+    <section id="empty" class="empty">
+      <p class="empty-title">No videos yet.</p>
+      <ul id="services" class="services"></ul>
+    </section>
+  </main>
+</body>
+</html>

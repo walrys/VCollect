@@ -1,0 +1,39 @@
+services:
+  app:
+    build: .
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATA_DIR: /data
+      OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434}
+      WHISPER_URL: ${WHISPER_URL:-http://whisper:8000}
+    volumes:
+      - ${DATA_DIR:-./data}:/data
+    ports:
+      - "${PORT:-8000}:8000"
+    depends_on:
+      - ollama
+      - whisper
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama:0.40.10
+    volumes:
+      - ollama-models:/root/.ollama
+    restart: unless-stopped
+
+  whisper:
+    image: ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cpu
+    environment:
+      PRELOAD_MODELS: '["Systran/faster-whisper-small.en"]'
+      WHISPER__COMPUTE_TYPE: int8
+      ENABLE_UI: "false"
+      LOG_LEVEL: info
+    volumes:
+      - whisper-models:/home/ubuntu/.cache/huggingface/hub
+    restart: unless-stopped
+
+volumes:
+  ollama-models:
+  whisper-models:

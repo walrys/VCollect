@@ -1,0 +1,9 @@
+# Development: run from the mounted source and reload on save.
+services:
+  app:
+    volumes:
+      - .:/srv
+    environment:
+      # File events from Windows bind mounts are unreliable; poll instead.
+      WATCHFILES_FORCE_POLLING: "true"
+    command: ["uvicorn", "app.main:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000", "--reload"]
