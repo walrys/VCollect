@@ -143,6 +143,7 @@ def _upsert(conn: sqlite3.Connection, row: NotionRow) -> None:
     ).fetchone()[0]
     db.set_tags(conn, post_id, "notion", row.tags)
     db.set_tags(conn, post_id, "ai", row.ai_tags)
+    db.reindex_post(conn, post_id)
 
 
 def _flag_deleted(conn: sqlite3.Connection, seen: set[str]) -> None:

@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import mimetypes
 from contextlib import asynccontextmanager, closing
 from pathlib import Path
 
@@ -20,6 +21,9 @@ from app.pipeline.transcribe import Transcriber
 
 WEB_DIR = Path(__file__).parent / "web"
 
+# The slim Python image has no system MIME table, and its built-in one lacks WebP.
+mimetypes.add_type("image/webp", ".webp")
+
 logger = logging.getLogger(__name__)
 
 
@@ -33,7 +37,7 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        settings.data_dir.mkdir(parents=True, exist_ok=True)
+        (settings.data_dir / "media").mkdir(parents=True, exist_ok=True)
         with closing(db.connect(settings.db_path)) as conn:
             db.migrate(conn)
 
@@ -67,7 +71,13 @@ def create_app(
     app = FastAPI(title="VCollect", lifespan=lifespan)
     app.state.settings = settings
     app.include_router(api.router)
-    # Mounted last so /api routes match first.
+    # Videos, images and thumbnails; StaticFiles answers Range requests, so videos can seek.
+    app.mount(
+        "/media",
+        StaticFiles(directory=settings.data_dir / "media", check_dir=False),
+        name="media",
+    )
+    # Mounted last so /api and /media match first.
     app.mount("/", StaticFiles(directory=WEB_DIR, html=True), name="web")
     return app
 

@@ -44,7 +44,7 @@ v1 deliberately leaves out:
 ## Tech stack
 
 - Python 3.12 + FastAPI, SQLite with FTS5, a static HTML page + plain JS (no build step) calling the app's own JSON API.
-- yt-dlp: YouTube and every non-Instagram URL. Self-updates on container start and nightly, since its site extractors break often. Needs Deno (bundled in the image) to solve YouTube's JavaScript challenges.
+- yt-dlp: every link first, Instagram reels included. Self-updates on container start and nightly, since its site extractors break often. Needs Deno (bundled in the image) to solve YouTube's JavaScript challenges.
 - gallery-dl: Instagram image posts and carousels, which yt-dlp cannot fetch (yt-dlp handles reels, without a login).
 - ffmpeg: compression, keyframes, thumbnails.
 - Ollama + `qwen3.5` (vision-capable, multilingual): summaries and AI tags.
@@ -104,7 +104,7 @@ The web page talks to the server only through the JSON API (`/api/posts`, `/api/
 - **Search**: server-side, debounced, keyword FTS5 with prefix matching over title, user caption, platform caption, summary, transcript, uploader, AI tags. Results keep timeline order and combine with selected tags as AND.
 - **Tag bar**: Notion tags as filled chips; AI tags in a second row as outlined chips. Top ~20 plus "show all". Filtering is instant (client-side) and AND across tags. Once tags are selected, the bar shows only tags present in the current results, with counts.
 - **Grid**: one 9:16 tile per post (landscape centre-cropped), ordered by saved date, static thumbnails, a "1/5" badge on carousels and an icon on image posts.
-- **Group by date**: buckets are exclusive, first match wins: Today, Yesterday, This Week (weeks start Monday), Last Week, then one heading per month ("October 2026"). Empty groups are hidden. Local timezone (`TZ`). The checkbox state is remembered per browser.
+- **Group by date**: buckets are exclusive, first match wins: Today, Yesterday, This Week (weeks start Monday), Last Week, then one heading per month ("October 2026"). Empty groups are hidden. Grouping runs in the browser, in its local time. The checkbox state is remembered per browser.
 - **Pop-up player**: plays local media; swipe or arrow keys move through a post's items and through the filtered posts. Edits Notion tags, caption, summary, AI tags; promotes an AI tag to a Notion tag; deletes; links to the original.
 - **Menu**: Sync button or progress bar, group-by-date, auto-pull toggle, disk usage.
 - Responsive for phone browsers over Tailscale; follows the system dark/light theme.
@@ -115,14 +115,16 @@ The web page talks to the server only through the JSON API (`/api/posts`, `/api/
 app/                     FastAPI package
   main.py                app factory; mounts the API and the static web page
   config.py              Settings, read from environment variables
-  api/                   JSON API routes: health, pull, sync (posts, tags, media to come)
-  db/                    SQLite connection and append-only MIGRATIONS
-  web/                   static page: index.html, app.js, app.css
+  api/                   JSON API routes: health, pull, sync, posts + search; /media serves DATA_DIR/media
+  db/                    SQLite connection, append-only MIGRATIONS, tag and search helpers
+  web/                   static page, ES modules, no build: app.js (Sync, services), gallery.js
+                         (grid, tag bar, search, date groups), player.js, tags.js, app.css
   notion/                Notion client, schema check, pull (push to come)
   pipeline/              Sync: urls, download, media (ffmpeg), transcribe, summarise; post.py runs
                          one post's steps, runner.py the background job; errors.py decides
                          Failed (PostFailed) vs retry next Sync (TryLater)
-tests/                   pytest; fakes/ holds FakeNotion (fixtures/ sample clip arrives with the pipeline)
+tests/                   pytest; fakes/ holds FakeNotion, fake downloader/whisper/Ollama, and
+                         sample media that ffmpeg generates per test session
 docker/entrypoint.sh     refreshes yt-dlp and gallery-dl on every server start
 docker-compose*.yml      base stack, dev override, GPU override
 .env.example             every setting, plus the per-machine COMPOSE_FILE
@@ -164,6 +166,6 @@ build:   docker compose build
 
 - Whisper on the GPU: speaches' pinned CUDA images are built on CUDA 12.4 / 12.6 (latest release 0.9.0-rc.3, Dec 2025), and the RTX 5070 Ti (Blackwell) needs 12.8+. Whisper therefore runs on the CPU, which the Ryzen 7700 handles easily for `small.en`. Revisit if speaches ships a 12.8+ build.
 - Instagram image posts and carousels (gallery-dl) are untested against the real site until `cookies.txt` exists. Reels via yt-dlp work without one.
-- The deleted-in-Notion dialog before Sync is not built yet; Sync skips those posts for now.
+- Not built yet: the deleted-in-Notion dialog before Sync (Sync skips those posts for now); gallery editing and push to Notion (tags, caption, summary, AI tags, promote, delete); Add URL; the auto-pull toggle and disk usage in the menu.
 - N100 throughput is unmeasured: time a Sync on ZimaOS before deciding to move there.
 - Future: an iOS-only native app on the JSON API.

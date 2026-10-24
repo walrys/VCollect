@@ -1,5 +1,7 @@
 // Gallery page. Talks to the server only through the JSON API (/api/...).
 
+import { initGallery, loadPosts } from "./gallery.js";
+
 const el = (id) => document.getElementById(id);
 const POLL_MS = 1000;
 
@@ -11,6 +13,7 @@ async function pullFromNotion() {
     const result = await response.json();
     setSyncLabel(result.new);
     el("sync").disabled = false;
+    await loadPosts(); // the pull may have changed captions and tags
   } catch {
     // The server is down; showServices says so.
   }
@@ -32,14 +35,21 @@ async function cancelSync() {
   await fetch("/api/sync/cancel", { method: "POST" });
 }
 
-// Every open tab polls, so each shows the same progress bar.
+// Every open tab polls, so each shows the same progress bar. Finished posts join the grid
+// as they land.
 async function followSync(progress) {
+  let done = progress.done;
   while (progress.running) {
     showProgress(progress);
     await new Promise((resolve) => setTimeout(resolve, POLL_MS));
     progress = await (await fetch("/api/sync")).json();
+    if (progress.done !== done) {
+      done = progress.done;
+      loadPosts();
+    }
   }
   showProgress(progress);
+  loadPosts();
 }
 
 function showProgress(progress) {
@@ -112,6 +122,9 @@ function serviceRow(name, state, ok) {
 
 el("sync").addEventListener("click", startSync);
 el("cancel").addEventListener("click", cancelSync);
+
+initGallery();
+loadPosts();
 
 (async () => {
   const progress = await (await fetch("/api/sync")).json();

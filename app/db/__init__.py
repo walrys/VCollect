@@ -1,7 +1,19 @@
 """SQLite access: one database file in DATA_DIR, schema built up by MIGRATIONS."""
 
+import re
 import sqlite3
 from pathlib import Path
+
+# The search document for each post: every text a search should find, tags of both kinds included.
+SEARCH_ROWS = """
+    INSERT INTO post_search
+        (rowid, title, user_caption, platform_caption, summary, transcript, uploader, tags)
+    SELECT p.id, p.title, p.user_caption, p.platform_caption, p.summary,
+           coalesce(p.transcript, ''), p.uploader,
+           coalesce((SELECT group_concat(t.name, ' ') FROM post_tags pt
+                     JOIN tags t ON t.id = pt.tag_id WHERE pt.post_id = p.id), '')
+    FROM posts p
+"""
 
 # Append-only. Entry N upgrades the schema to version N+1, tracked in PRAGMA user_version.
 MIGRATIONS: list[str] = [
@@ -70,6 +82,14 @@ MIGRATIONS: list[str] = [
         UNIQUE (post_id, position)
     );
     """,
+    # Full-text search, one row per post (rowid = posts.id), kept current by reindex_post().
+    f"""
+    CREATE VIRTUAL TABLE post_search USING fts5(
+        title, user_caption, platform_caption, summary, transcript, uploader, tags,
+        tokenize = 'porter unicode61 remove_diacritics 2'
+    );
+    {SEARCH_ROWS};
+    """,
 ]
 
 
@@ -89,6 +109,22 @@ def migrate(conn: sqlite3.Connection) -> None:
         except sqlite3.Error:
             conn.rollback()
             raise
+
+
+def reindex_post(conn: sqlite3.Connection, post_id: int) -> None:
+    """Refresh a post's search document; call after changing any text or tag of it."""
+    conn.execute("DELETE FROM post_search WHERE rowid = ?", (post_id,))
+    conn.execute(f"{SEARCH_ROWS} WHERE p.id = ?", (post_id,))
+
+
+def search(conn: sqlite3.Connection, text: str) -> list[int]:
+    """IDs of posts matching every word of `text`, each word as a prefix."""
+    words = re.findall(r"\w+", text.lower())
+    if not words:
+        return []
+    query = " ".join(f'"{word}"*' for word in words)
+    rows = conn.execute("SELECT rowid FROM post_search WHERE post_search MATCH ?", (query,))
+    return [post_id for (post_id,) in rows]
 
 
 def set_tags(conn: sqlite3.Connection, post_id: int, kind: str, names: list[str]) -> None:

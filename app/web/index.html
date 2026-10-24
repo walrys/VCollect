@@ -5,14 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>VCollect</title>
   <link rel="stylesheet" href="/app.css">
-  <script src="/app.js" defer></script>
+  <script type="module" src="/app.js"></script>
 </head>
 <body>
   <header class="topbar">
     <h1 class="wordmark">VCOLLECT</h1>
     <nav class="menu">
       <label class="toggle">
-        <input type="checkbox" id="group-by-date" disabled>
+        <input type="checkbox" id="group-by-date">
         Group by date
       </label>
       <button id="sync" class="button" type="button" disabled>Sync</button>
@@ -29,16 +29,42 @@
   <main class="page">
     <input id="search" class="search" type="search" placeholder="Search your collection"
            autocomplete="off" aria-label="Search">
-    <div id="tags" class="tags"></div>
+    <div class="tag-bar">
+      <div id="tags-notion" class="tags" aria-label="Tags"></div>
+      <div id="tags-ai" class="tags" aria-label="AI tags"></div>
+    </div>
     <details id="report" class="report" hidden>
       <summary id="report-summary"></summary>
       <ul id="report-problems"></ul>
     </details>
-    <section id="grid" class="grid" aria-live="polite"></section>
-    <section id="empty" class="empty">
+    <div id="grid"></div>
+    <p id="no-match" class="no-match" hidden>Nothing matches.</p>
+    <section id="empty" class="empty" hidden>
       <p class="empty-title">No videos yet.</p>
       <ul id="services" class="services"></ul>
     </section>
   </main>
+
+  <dialog id="player" class="player" aria-label="Post">
+    <div class="player-media">
+      <div id="player-stage" class="player-stage"></div>
+      <button id="player-prev" class="player-nav prev" type="button" aria-label="Previous">‹</button>
+      <button id="player-next" class="player-nav next" type="button" aria-label="Next">›</button>
+      <span id="player-count" class="player-count"></span>
+    </div>
+    <aside class="player-info">
+      <button id="player-close" class="player-close" type="button" aria-label="Close">×</button>
+      <h2 id="player-title" class="player-title"></h2>
+      <p id="player-meta" class="player-meta"></p>
+      <p id="player-summary" class="player-summary"></p>
+      <p id="player-caption" class="player-caption"></p>
+      <div id="player-tags" class="tags"></div>
+      <div id="player-ai-tags" class="tags"></div>
+      <p class="player-links">
+        <a id="player-original" target="_blank" rel="noopener">Open original</a>
+        <a id="player-notion" target="_blank" rel="noopener">Open in Notion</a>
+      </p>
+    </aside>
+  </dialog>
 </body>
 </html>

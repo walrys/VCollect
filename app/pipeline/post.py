@@ -100,6 +100,7 @@ class Pipeline:
                 transcript = await self._whisper(conn, post_id)
             with conn:
                 conn.execute("UPDATE posts SET transcript = ? WHERE id = ?", (transcript, post_id))
+                db.reindex_post(conn, post_id)
 
         post = _post(conn, post_id)
         if post["generated"] is None:
@@ -169,6 +170,7 @@ class Pipeline:
                     post_id,
                 ),
             )
+            db.reindex_post(conn, post_id)
 
     async def _whisper(self, conn, post_id: int) -> str:
         parts = []
@@ -233,6 +235,7 @@ class Pipeline:
                 (generated["summary"], _now(), post_id),
             )
             db.set_tags(conn, post_id, "ai", generated["ai_tags"])
+            db.reindex_post(conn, post_id)
 
     async def _mark_failed(self, conn, post_id: int, message: str) -> None:
         post = _post(conn, post_id)
