@@ -10,6 +10,7 @@ from pathlib import Path
 
 from app import db
 from app.notion.mirror import Mirror
+from app.notion.pull import count_new
 from app.pipeline.errors import LoginNeeded, PostFailed, TryLater
 from app.pipeline.post import Pipeline
 
@@ -72,11 +73,7 @@ class Syncer:
 
     def status(self) -> dict:
         with closing(db.connect(self.db_path)) as conn:
-            waiting = conn.execute(
-                "SELECT COUNT(*) FROM posts"
-                " WHERE notion_state = 'synced' AND status = 'Not started'"
-            ).fetchone()[0]
-        return {**asdict(self.progress), "new": waiting}
+            return {**asdict(self.progress), "new": count_new(conn)}
 
     async def _run(self) -> None:
         progress = self.progress
@@ -117,28 +114,33 @@ class Syncer:
         ).fetchone()
         label = post["user_caption"] or post["url"] or f"Post {post_id}"
         progress.current, progress.step = label, "starting"
+        retry_error = ""  # why the post is left for the next Sync, if it is
         try:
             await self.pipeline.process(conn, post_id, self._on_step, blocked_sites)
             progress.done += 1
         except Cancelled:
             progress.stopped = "Cancelled"
-            return
+            return  # the post stays new
         except PostFailed as error:
             progress.failed += 1
             self._problem(f"{label}: {error}")
         except LoginNeeded as error:
             progress.later += 1
+            retry_error = str(error)
             if error.site not in blocked_sites:
                 blocked_sites.add(error.site)
                 self._problem(str(error))
         except TryLater as error:
             progress.later += 1
+            retry_error = str(error)
             self._problem(f"{label}: {error}")
         except Exception as error:
             # A bug with one post should not end the run; the post is retried next Sync.
             logger.exception("Processing post %s failed", post_id)
             progress.later += 1
+            retry_error = f"Unexpected error: {error}"
             self._problem(f"{label}: unexpected error: {error}")
+        _tried(conn, post_id, retry_error)
         progress.handled += 1
 
     def _on_step(self, step: str) -> None:
@@ -149,6 +151,14 @@ class Syncer:
     def _problem(self, message: str) -> None:
         if len(self.progress.problems) < MAX_PROBLEMS:
             self.progress.problems.append(message)
+
+
+def _tried(conn: sqlite3.Connection, post_id: int, retry_error: str) -> None:
+    with conn:
+        conn.execute(
+            "UPDATE posts SET retry_error = ?, tried_at = ? WHERE id = ?",
+            (retry_error, _now(), post_id),
+        )
 
 
 def disk_used(data_dir: Path) -> int:

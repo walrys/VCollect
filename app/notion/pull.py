@@ -21,7 +21,7 @@ EDIT_FIELDS = {
 @dataclass(frozen=True)
 class PullResult:
     pulled: int
-    new: int  # rows waiting for Sync: Status is Not started
+    new: int  # rows no Sync has tried yet
     deleted_in_notion: int
     finished_at: str
 
@@ -116,7 +116,8 @@ def upsert_row(conn: sqlite3.Connection, row: NotionRow) -> int:
 
 
 def count_new(conn: sqlite3.Connection) -> int:
-    return _count(conn, "notion_state = 'synced' AND status = 'Not started'")
+    """Rows no Sync has tried yet. Rows a Sync left for later are retried too, but not new."""
+    return _count(conn, "notion_state = 'synced' AND status = 'Not started' AND retry_error = ''")
 
 
 def _keep_newer_local_edits(conn: sqlite3.Connection, row: NotionRow) -> NotionRow:

@@ -29,8 +29,22 @@ export function initGallery() {
 
   let timer;
   el("search").addEventListener("input", () => {
+    if (location.hash === "#processing") location.hash = ""; // searching goes back to the grid
+    el("search-field").classList.toggle("busy", el("search").value.trim() !== "");
     clearTimeout(timer);
     timer = setTimeout(runSearch, SEARCH_DELAY_MS);
+  });
+  // "/" jumps to the search box, as on most sites with one.
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "/" || event.metaKey || event.ctrlKey || event.altKey) return;
+    if (event.target.closest("input, textarea, select, dialog")) return;
+    event.preventDefault();
+    el("search").focus();
+  });
+  el("clear-filters").addEventListener("click", () => {
+    state.selected.clear();
+    el("search").value = "";
+    runSearch();
   });
 }
 
@@ -89,12 +103,23 @@ async function runSearch() {
   const text = el("search").value.trim();
   if (!text) {
     state.searchIds = null;
+    el("search-field").classList.remove("busy");
     render();
     return;
   }
-  const response = await fetch(`/api/search?q=${encodeURIComponent(text)}`);
-  if (!response.ok || el("search").value.trim() !== text) return; // a newer search is coming
-  state.searchIds = new Set((await response.json()).ids);
+  el("search-field").classList.add("busy");
+  let ids;
+  try {
+    const response = await fetch(`/api/search?q=${encodeURIComponent(text)}`);
+    if (el("search").value.trim() !== text) return; // a newer search is coming
+    if (response.ok) ids = (await response.json()).ids;
+  } catch {
+    // The server is down; the grid stays as it was.
+  }
+  if (el("search").value.trim() !== text) return;
+  el("search-field").classList.remove("busy");
+  if (!ids) return;
+  state.searchIds = new Set(ids);
   render();
 }
 
@@ -112,6 +137,11 @@ function render() {
   const visible = visiblePosts();
   renderTags(visible);
   renderGrid(visible);
+  const filtered = state.selected.size > 0 || state.searchIds !== null;
+  el("results").hidden = !filtered;
+  el("results-count").textContent = `${visible.length} of ${state.posts.length} ${
+    state.posts.length === 1 ? "post" : "posts"
+  }`;
   el("empty").hidden = !state.loaded || state.posts.length > 0;
   el("no-match").hidden = state.posts.length === 0 || visible.length > 0;
 }
@@ -152,7 +182,7 @@ function renderTags(visible) {
     if (sorted.length > TOP_TAGS) {
       const more = document.createElement("button");
       more.type = "button";
-      more.className = "link-button";
+      more.className = "chip tag-more";
       more.textContent = state.expanded[kind] ? "Show fewer" : `Show all ${sorted.length}`;
       more.addEventListener("click", () => {
         state.expanded[kind] = !state.expanded[kind];
@@ -160,46 +190,73 @@ function renderTags(visible) {
       });
       row.append(more);
     }
+    row.classList.toggle("expanded", state.expanded[kind]);
     row.hidden = sorted.length === 0;
   }
 }
 
+// Tiles are kept between renders, so a filter change moves them instead of reloading images.
+const tiles = new Map(); // post id -> { json, element }
+let onScreen = []; // the posts in the grid, in order: the player steps through these
+
 function renderGrid(visible) {
-  const grid = el("grid");
+  onScreen = visible;
   const groups = state.grouped ? groupByDate(visible) : [[null, visible]];
-  grid.replaceChildren(
+  el("grid").replaceChildren(
     ...groups.map(([heading, posts]) => {
       const section = document.createElement("section");
       section.className = "group";
       if (heading) {
         const title = document.createElement("h2");
         title.className = "group-heading";
-        title.textContent = heading;
+        const count = document.createElement("span");
+        count.className = "group-count";
+        count.textContent = posts.length;
+        title.append(heading, count);
         section.append(title);
       }
-      const tiles = document.createElement("div");
-      tiles.className = "tiles";
-      tiles.append(...posts.map((post) => tile(post, visible)));
-      section.append(tiles);
+      const grid = document.createElement("div");
+      grid.className = "tiles";
+      grid.append(...posts.map(tileFor));
+      section.append(grid);
       return section;
     }),
   );
+  const ids = new Set(state.posts.map((post) => post.id));
+  for (const id of tiles.keys()) if (!ids.has(id)) tiles.delete(id);
 }
 
-function tile(post, visible) {
+function tileFor(post) {
+  const json = JSON.stringify(post);
+  const kept = tiles.get(post.id);
+  if (kept?.json === json) return kept.element;
+  const element = tile(post);
+  tiles.set(post.id, { json, element });
+  return element;
+}
+
+function tile(post) {
   const button = document.createElement("button");
   button.type = "button";
   button.className = "tile";
   const image = document.createElement("img");
-  image.src = post.thumb;
   image.loading = "lazy";
+  image.decoding = "async";
   image.alt = post.caption || post.title || "";
+  image.src = post.thumb;
+  // Fades in once loaded, rather than popping in line by line.
+  if (!image.complete) {
+    image.classList.add("loading");
+    const shown = () => image.classList.remove("loading");
+    image.addEventListener("load", shown, { once: true });
+    image.addEventListener("error", shown, { once: true });
+  }
   button.append(image);
 
   const badges = document.createElement("div");
   badges.className = "badges";
-  if (post.items.length > 1) badges.append(badge(`1/${post.items.length}`));
-  else if (post.items[0]?.kind === "image") badges.append(badge("Photo"));
+  if (post.items.length > 1) badges.append(badge(`1/${post.items.length}`, "", ICONS.stack));
+  else if (post.items[0]?.kind === "image") badges.append(badge("Photo", "", ICONS.photo));
   if (post.state === "deleted_in_notion") badges.append(badge("Deleted in Notion", "warn"));
   if (post.state === "local_only") badges.append(badge("Not in Notion", "warn"));
   button.append(badges);
@@ -211,21 +268,44 @@ function tile(post, visible) {
     caption.textContent = label;
     button.append(caption);
   }
-  button.addEventListener("click", () =>
-    openPlayer([...visible], visible.indexOf(post), {
+  button.addEventListener("click", () => {
+    const list = [...onScreen];
+    openPlayer(list, list.findIndex((p) => p.id === post.id), {
       onTag: addTagFilter,
       onChange: updatePost,
       onDelete: removePost,
       knownTags,
-    }),
-  );
+      tileFor: revealTile,
+    });
+  });
   return button;
 }
 
-function badge(text, tone = "") {
+// The tile the player opens from and closes into, scrolled into view behind it if the player
+// has moved on to a post further along. Null when the post is not in the grid.
+function revealTile(id) {
+  const element = tiles.get(id)?.element;
+  if (!element?.isConnected) return null;
+  const rect = element.getBoundingClientRect();
+  const top = el("topbar").getBoundingClientRect().bottom;
+  if (rect.bottom < top || rect.top > window.innerHeight) {
+    element.scrollIntoView({ block: "center", behavior: "instant" });
+  }
+  return element;
+}
+
+const ICONS = {
+  stack: '<rect x="3" y="6" width="11" height="11" rx="2"/><path d="M7 3h8a2 2 0 0 1 2 2v8"/>',
+  photo: '<rect x="3" y="4" width="14" height="12" rx="2"/><circle cx="8" cy="9" r="1.5"/><path d="m17 13-4-4-7 7"/>',
+};
+
+function badge(text, tone = "", icon = "") {
   const span = document.createElement("span");
   span.className = `badge ${tone}`;
-  span.textContent = text;
+  if (icon) {
+    span.insertAdjacentHTML("afterbegin", `<svg viewBox="0 0 20 20" aria-hidden="true">${icon}</svg>`);
+  }
+  span.append(text);
   return span;
 }
 

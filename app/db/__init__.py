@@ -99,6 +99,12 @@ MIGRATIONS: list[str] = [
         PRIMARY KEY (post_id, field)
     );
     """,
+    # Why the last Sync left a post Not started, for a reason that may pass (a login wall, a
+    # service down). Every Sync retries such posts, but they no longer count as new.
+    """
+    ALTER TABLE posts ADD COLUMN retry_error TEXT NOT NULL DEFAULT '';
+    ALTER TABLE posts ADD COLUMN tried_at TEXT;  -- the last Sync to work on the post, UTC
+    """,
 ]
 
 

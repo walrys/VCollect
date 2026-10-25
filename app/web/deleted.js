@@ -13,6 +13,7 @@ export function askAboutDeleted(posts) {
   const update = () => {
     const ticked = boxes.filter((box) => box.checked).length;
     el("deleted-go").textContent = ticked ? `Delete ${ticked} and Sync` : "Keep all and Sync";
+    el("deleted-go").classList.toggle("destructive", ticked > 0);
     el("deleted-all").textContent = ticked === boxes.length ? "Untick all" : "Tick all";
   };
 

@@ -48,7 +48,8 @@ def test_a_login_wall_skips_the_rest_of_that_site(settings, samples):
         client.post("/api/sync")
         progress = wait_for_sync(client)
 
-    assert (progress["done"], progress["later"], progress["new"]) == (1, 3, 3)
+    # Tried, so no longer new; the next Sync retries them all the same.
+    assert (progress["done"], progress["later"], progress["new"]) == (1, 3, 0)
     assert len([call for call in services.downloader.calls if "instagram" in call]) == 1
     assert progress["problems"] == [
         "Instagram needs a login: add its cookies to cookies.txt in the data folder"

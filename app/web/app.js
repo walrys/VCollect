@@ -2,7 +2,8 @@
 
 import { askAboutDeleted } from "./deleted.js";
 import { initGallery, loadPosts, postsDeletedInNotion } from "./gallery.js";
-import { autoPullOn, initMenu } from "./menu.js";
+import { anchorBelow, autoPullOn, initMenu } from "./menu.js";
+import { initProcessing, refreshProcessing } from "./processing.js";
 import { errorText, toast } from "./toast.js";
 
 const el = (id) => document.getElementById(id);
@@ -27,7 +28,15 @@ async function pullFromNotion() {
 }
 
 function setSyncLabel(waiting) {
-  el("sync").textContent = waiting ? `Sync (${waiting} new)` : "Sync";
+  const button = el("sync");
+  button.replaceChildren("Sync");
+  button.removeAttribute("aria-label");
+  if (!waiting) return;
+  const count = document.createElement("span");
+  count.className = "count";
+  count.textContent = `${waiting} new`;
+  button.append(count);
+  button.setAttribute("aria-label", `Sync (${waiting} new)`);
 }
 
 // Sync: pull, ask about posts deleted in Notion, then process the new rows on the server.
@@ -54,10 +63,10 @@ async function cancelSync() {
 }
 
 // Every open tab polls, so each shows the same progress bar. Finished posts join the grid
-// as they land.
+// as they land, and leave the Processing page.
 async function followSync(progress) {
   following = true;
-  let done = progress.done;
+  let { done, handled } = progress;
   while (progress.running) {
     showProgress(progress);
     await new Promise((resolve) => setTimeout(resolve, POLL_MS));
@@ -66,10 +75,15 @@ async function followSync(progress) {
       done = progress.done;
       loadPosts();
     }
+    if (progress.handled !== handled) {
+      handled = progress.handled;
+      refreshProcessing();
+    }
   }
   following = false;
   showProgress(progress);
   loadPosts();
+  refreshProcessing();
 }
 
 // Keeps a tab in step with what happens elsewhere: a Sync started from another tab, the
@@ -84,6 +98,7 @@ async function refresh() {
     return;
   }
   if (autoPullOn()) loadPosts();
+  refreshProcessing(); // another tab may have retried rows
 }
 
 function showProgress(progress) {
@@ -181,10 +196,27 @@ async function addLink(event) {
     return;
   }
   input.value = "";
+  el("add-form").hidePopover();
   setSyncLabel((await response.json()).new);
   toast("Added to Notion. Press Sync to fetch it.");
 }
 
+// The header stays on screen; date headings stick just below it, and a hairline appears
+// under it once the page scrolls beneath.
+function trackHeader() {
+  const bar = el("topbar");
+  new ResizeObserver(() => {
+    document.documentElement.style.setProperty("--header-h", `${bar.offsetHeight}px`);
+  }).observe(bar);
+  const edge = () => bar.classList.toggle("scrolled", window.scrollY > 0);
+  window.addEventListener("scroll", edge, { passive: true });
+  edge();
+}
+
+anchorBelow(el("add-form"), el("add-button"));
+el("add-form").addEventListener("toggle", (event) => {
+  if (event.newState === "open") el("add-url").focus();
+});
 el("add-form").addEventListener("submit", addLink);
 document.addEventListener("vcollect:waiting", (event) => setSyncLabel(event.detail));
 el("sync").addEventListener("click", startSync);
@@ -192,8 +224,10 @@ el("cancel").addEventListener("click", cancelSync);
 document.addEventListener("visibilitychange", refresh);
 setInterval(refresh, REFRESH_MS);
 
+trackHeader();
 initGallery();
 initMenu();
+initProcessing();
 loadPosts();
 
 (async () => {

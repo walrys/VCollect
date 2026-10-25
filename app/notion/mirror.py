@@ -102,6 +102,44 @@ class Mirror:
                         (page["id"], page.get("url", ""), page["last_edited_time"], post_id),
                     )
 
+    async def retry(self, post_ids: list[int]) -> list[int]:
+        """Sets Failed rows back to Not started, in Notion and here, so the next Sync processes
+        them as new. Returns the posts reset; posts that are not Failed rows in Notion are left
+        alone. When Notion cannot be reached, the posts reset before then stay reset."""
+        if not post_ids:
+            return []
+        async with self._lock:
+            await self._ensure_schema()
+            with closing(db.connect(self.db_path)) as conn:
+                marks = ",".join("?" * len(post_ids))
+                failed = conn.execute(
+                    "SELECT id, notion_page_id FROM posts WHERE status = 'Failed'"
+                    f" AND notion_state = 'synced' AND id IN ({marks})",
+                    post_ids,
+                ).fetchall()
+                reset = []
+                for post_id, page_id in failed:
+                    try:
+                        await self.client.update_page(
+                            page_id,
+                            {
+                                self.props.status: values.status("Not started"),
+                                self.props.error: values.rich_text(""),
+                            },
+                        )
+                    except NotionError as error:
+                        if error.status == 404:
+                            continue  # gone from Notion; the next pull flags it
+                        raise
+                    with conn:
+                        conn.execute(
+                            "UPDATE posts SET status = 'Not started', error = '', retry_error = ''"
+                            " WHERE id = ?",
+                            (post_id,),
+                        )
+                    reset.append(post_id)
+                return reset
+
     async def auto_pull(self, every: float = AUTO_PULL_SECONDS) -> None:
         """Runs for the app's lifetime, pulling every `every` seconds while auto-pull is on."""
         while True:

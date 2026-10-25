@@ -2,20 +2,41 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
   <title>VCollect</title>
   <link rel="stylesheet" href="/app.css">
   <script type="module" src="/app.js"></script>
 </head>
 <body>
-  <header class="topbar">
-    <h1 class="wordmark">VCOLLECT</h1>
-    <form id="add-form" class="add-form">
-      <input id="add-url" type="url" placeholder="Add a link" required aria-label="Add a link">
-      <button class="button secondary" type="submit">Add</button>
-    </form>
+  <header id="topbar" class="topbar">
+    <h1 class="wordmark"><a href="#" title="Back to the top">VCOLLECT</a></h1>
+    <div id="search-field" class="search-field">
+      <svg class="search-icon" viewBox="0 0 20 20" aria-hidden="true">
+        <circle cx="8.5" cy="8.5" r="5.75" />
+        <path d="m13 13 4.25 4.25" />
+      </svg>
+      <input id="search" class="search" type="search" placeholder="Search your collection"
+             autocomplete="off" enterkeyhint="search" aria-label="Search">
+      <kbd class="search-key" aria-hidden="true">/</kbd>
+      <span class="spinner" aria-hidden="true"></span>
+    </div>
     <nav class="menu">
-      <button id="sync" class="button" type="button" disabled>Sync</button>
+      <button id="add-button" class="icon-button" type="button" popovertarget="add-form"
+              aria-label="Add a link" title="Add a link">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12M4 10h12" /></svg>
+      </button>
+      <form id="add-form" class="popover-panel add-panel" popover>
+        <label class="panel-title" for="add-url">Add a link</label>
+        <div class="add-row">
+          <input id="add-url" type="url" placeholder="https://" required autocomplete="off"
+                 enterkeyhint="go">
+          <button class="button" type="submit">Add</button>
+        </div>
+        <p class="panel-note">It goes into Notion; the next Sync downloads it.</p>
+      </form>
+      <button id="sync" class="button sync-button" type="button" disabled>Sync</button>
       <div id="progress" class="progress" hidden>
         <div class="progress-row">
           <progress id="progress-bar" max="1" value="0"></progress>
@@ -23,17 +44,27 @@
         </div>
         <p id="progress-label" class="progress-label"></p>
       </div>
-      <button id="menu-button" class="button secondary menu-button" type="button"
-              popovertarget="menu-panel" aria-label="Menu">☰</button>
-      <div id="menu-panel" class="menu-panel" popover>
-        <label class="toggle">
-          <input type="checkbox" id="group-by-date">
-          Group by date
-        </label>
-        <label class="toggle">
-          <input type="checkbox" id="auto-pull">
-          <span id="auto-pull-label">Pull from Notion every 5 min</span>
-        </label>
+      <button id="menu-button" class="icon-button" type="button" popovertarget="menu-panel"
+              aria-label="Menu" title="Menu">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3.5 6h13M3.5 10h13M3.5 14h13" /></svg>
+      </button>
+      <div id="menu-panel" class="popover-panel menu-panel" popover>
+        <div class="menu-group">
+          <a class="menu-row" href="#processing">
+            <span>Processing</span>
+            <svg class="chevron" viewBox="0 0 20 20" aria-hidden="true"><path d="m8 5 5 5-5 5" /></svg>
+          </a>
+        </div>
+        <div class="menu-group">
+          <label class="menu-row">
+            <span>Group by date</span>
+            <input type="checkbox" id="group-by-date" class="switch" role="switch">
+          </label>
+          <label class="menu-row">
+            <span id="auto-pull-label">Pull from Notion every 5 min</span>
+            <input type="checkbox" id="auto-pull" class="switch" role="switch">
+          </label>
+        </div>
         <div class="disk">
           <div class="disk-row">
             <span>Storage</span>
@@ -46,54 +77,104 @@
     </nav>
   </header>
 
-  <main class="page">
-    <input id="search" class="search" type="search" placeholder="Search your collection"
-           autocomplete="off" aria-label="Search">
+  <main id="gallery" class="page">
     <div class="tag-bar">
-      <div id="tags-notion" class="tags" aria-label="Tags"></div>
-      <div id="tags-ai" class="tags" aria-label="AI tags"></div>
+      <div id="tags-notion" class="tags tag-row" aria-label="Tags"></div>
+      <div id="tags-ai" class="tags tag-row" aria-label="AI tags"></div>
+    </div>
+    <div id="results" class="results" hidden>
+      <span id="results-count"></span>
+      <button id="clear-filters" class="link-button" type="button">Clear</button>
     </div>
     <details id="report" class="report" hidden>
       <summary id="report-summary"></summary>
       <ul id="report-problems"></ul>
+      <a class="report-link" href="#processing">Every row Sync has not finished</a>
     </details>
     <div id="grid"></div>
     <p id="no-match" class="no-match" hidden>Nothing matches.</p>
     <section id="empty" class="empty" hidden>
-      <p class="empty-title">No videos yet.</p>
+      <p class="empty-title">No videos yet</p>
+      <p class="empty-note">Save links in Notion, then press Sync.</p>
       <ul id="services" class="services"></ul>
     </section>
   </main>
 
-  <dialog id="player" class="player" aria-label="Post">
-    <div class="player-media">
-      <div id="player-stage" class="player-stage"></div>
-      <button id="player-prev" class="player-nav prev" type="button" aria-label="Previous">‹</button>
-      <button id="player-next" class="player-nav next" type="button" aria-label="Next">›</button>
-      <span id="player-count" class="player-count"></span>
-    </div>
-    <aside class="player-info">
-      <button id="player-close" class="player-close" type="button" aria-label="Close">×</button>
-      <div id="player-view">
-        <h2 id="player-title" class="player-title"></h2>
-        <p id="player-meta" class="player-meta"></p>
-        <p id="player-summary" class="player-summary"></p>
-        <p id="player-caption" class="player-caption"></p>
-        <div id="player-tags" class="tags"></div>
-        <div id="player-ai-tags" class="tags"></div>
-        <p id="player-state" class="player-state"></p>
-        <p class="player-links">
-          <a id="player-original" target="_blank" rel="noopener">Open original</a>
-          <a id="player-notion" target="_blank" rel="noopener">Open in Notion</a>
-        </p>
-        <div class="player-actions">
-          <button id="player-edit" class="button secondary" type="button">Edit</button>
-          <button id="player-readd" class="button secondary" type="button">Re-add to Notion</button>
-          <button id="player-delete" class="link-button danger" type="button">Delete</button>
-        </div>
+  <main id="processing" class="page processing" hidden>
+    <a class="back-link" href="#">
+      <svg class="chevron" viewBox="0 0 20 20" aria-hidden="true"><path d="m12 5-5 5 5 5" /></svg>
+      Gallery
+    </a>
+    <h2 class="processing-title">Processing</h2>
+    <div id="processing-counts" class="stats"></div>
+    <section id="stage-failed" class="stage" hidden>
+      <div class="stage-head">
+        <h3 class="stage-title">Failed</h3>
+        <button id="retry-all" class="button secondary small" type="button">Retry all</button>
       </div>
-      <form id="player-editor" class="editor" hidden></form>
-    </aside>
+      <p class="stage-help">Sync skips these until they are retried, here or by setting Status
+        back to Not started in Notion.</p>
+      <ul id="rows-failed" class="stage-rows"></ul>
+    </section>
+    <section id="stage-later" class="stage" hidden>
+      <h3 class="stage-title">To retry</h3>
+      <p class="stage-help">The last Sync could not finish these, for a reason that may pass: a
+        login wall, a service that was down. Every Sync tries them again.</p>
+      <ul id="rows-later" class="stage-rows"></ul>
+    </section>
+    <section id="stage-new" class="stage" hidden>
+      <h3 class="stage-title">New</h3>
+      <p class="stage-help">No Sync has tried these yet.</p>
+      <ul id="rows-new" class="stage-rows"></ul>
+    </section>
+    <p id="processing-empty" class="no-match" hidden>Every row is processed.</p>
+  </main>
+
+  <dialog id="player" class="player" aria-label="Post">
+    <div id="player-scrim" class="player-scrim"></div>
+    <div id="player-sheet" class="player-sheet" tabindex="-1" autofocus>
+      <div class="player-media">
+        <div id="player-stage" class="player-stage">
+          <div id="player-track" class="player-track"></div>
+        </div>
+        <span class="player-grabber" aria-hidden="true"></span>
+        <button id="player-prev" class="glass-button player-nav prev" type="button"
+                aria-label="Previous">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m12 5-5 5 5 5" /></svg>
+        </button>
+        <button id="player-next" class="glass-button player-nav next" type="button"
+                aria-label="Next">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m8 5 5 5-5 5" /></svg>
+        </button>
+        <span id="player-count" class="player-count"></span>
+      </div>
+      <aside class="player-info">
+        <div id="player-view" class="player-view">
+          <h2 id="player-title" class="player-title"></h2>
+          <p id="player-meta" class="player-meta"></p>
+          <p id="player-summary" class="player-summary"></p>
+          <p id="player-caption" class="player-caption"></p>
+          <div id="player-tags" class="tags"></div>
+          <div id="player-ai-tags" class="tags"></div>
+          <p id="player-state" class="player-state"></p>
+          <div class="player-links">
+            <a id="player-original" class="button secondary small" target="_blank"
+               rel="noopener">Open original <span aria-hidden="true">↗</span></a>
+            <a id="player-notion" class="button secondary small" target="_blank"
+               rel="noopener">Notion <span aria-hidden="true">↗</span></a>
+          </div>
+          <div class="player-actions">
+            <button id="player-edit" class="button secondary" type="button">Edit</button>
+            <button id="player-readd" class="button secondary" type="button">Re-add to Notion</button>
+            <button id="player-delete" class="link-button danger" type="button">Delete</button>
+          </div>
+        </div>
+        <form id="player-editor" class="editor" hidden></form>
+      </aside>
+      <button id="player-close" class="glass-button player-close" type="button" aria-label="Close">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5.5 5.5 9 9m0-9-9 9" /></svg>
+      </button>
+    </div>
   </dialog>
 
   <dialog id="deleted" class="deleted" aria-labelledby="deleted-title">

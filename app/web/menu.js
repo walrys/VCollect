@@ -1,4 +1,5 @@
-// The menu panel: group by date (gallery.js keeps that one), auto-pull, and disk use.
+// The menu panel: the Processing page link (processing.js routes it), group by date
+// (gallery.js keeps that one), auto-pull, and disk use.
 
 import { errorText, toast } from "./toast.js";
 
@@ -14,16 +15,32 @@ export function autoPullOn() {
 
 export function initMenu() {
   const panel = el("menu-panel");
-  // A popover opens in the middle of the screen; this one hangs below its button.
+  anchorBelow(panel, el("menu-button"));
   panel.addEventListener("beforetoggle", (event) => {
-    if (event.newState !== "open") return;
-    const button = el("menu-button").getBoundingClientRect();
-    panel.style.top = `${button.bottom + 8}px`;
-    panel.style.right = `${Math.max(8, window.innerWidth - button.right)}px`;
-    loadSettings(); // the data folder may have grown since
+    if (event.newState === "open") loadSettings(); // the data folder may have grown since
   });
   el("auto-pull").addEventListener("change", saveAutoPull);
   loadSettings();
+}
+
+// A popover opens in the middle of the screen; these hang below their button, right-aligned
+// to it, and grow out of it.
+export function anchorBelow(panel, button) {
+  const place = () => {
+    const rect = button.getBoundingClientRect();
+    let right = Math.max(8, window.innerWidth - rect.right);
+    // Wider than the room left of the button (a phone): it moves over to fit the screen.
+    right = Math.max(8, Math.min(right, window.innerWidth - 8 - panel.offsetWidth));
+    panel.style.top = `${rect.bottom + 8}px`;
+    panel.style.right = `${right}px`;
+    const fromRight = window.innerWidth - right - (rect.left + rect.width / 2);
+    panel.style.transformOrigin = `calc(100% - ${fromRight}px) -8px`;
+  };
+  panel.addEventListener("beforetoggle", (event) => {
+    if (event.newState !== "open") return;
+    place();
+    requestAnimationFrame(place); // measured again once open, before it is drawn
+  });
 }
 
 async function loadSettings() {

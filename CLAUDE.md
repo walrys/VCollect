@@ -79,7 +79,7 @@ v1 deliberately leaves out:
 ### Sync job (processing)
 - Runs only from the Sync button, plus an optional nightly run (`NIGHTLY_SYNC`, off by default). New rows wait for the button.
 - One job at a time, one row at a time (platform rate limits). Server-side, so it survives closing the tab. Every open tab shows the progress bar ("12 / 40 · compressing <title>") with a cancel. Posts join the grid as each finishes.
-- Rows to process: `Status` = Not started.
+- Rows to process: `Status` = Not started. "Sync (N new)" counts only rows no Sync has tried: a row a Sync leaves for later keeps the reason (`retry_error`) and is retried by every Sync, but is no longer new.
 - Per row:
   1. **Normalise the URL**: strip tracking params (`?igsh=`, `&si=`), rewrite `youtu.be` / `shorts/` to `watch?v=`. A duplicate of an existing post → Failed "Duplicate of <link to first row>". A playlist or channel → Failed "not a single post".
   2. **Download**: yt-dlp first for every link (Instagram downloads wait 3–8 s each); when yt-dlp finds an Instagram image post or carousel (`NotASingleVideo`), gallery-dl takes over. Both read `DATA_DIR/cookies.txt`. Keep every item of a carousel, images included. Image-only posts are saved as images. A login wall (`LoginNeeded`) skips the rest of that site's posts for the run; gallery-dl's wall is named "Instagram image posts" so it never stops the reels.
@@ -91,7 +91,7 @@ v1 deliberately leaves out:
   - Every step is idempotent: a finished step's output is reused, never redone.
   - Done only when every step succeeds.
   - Transient errors (network, rate limit, Ollama or whisper down) leave the row Not started for the next Sync.
-  - Permanent errors (removed, private, unsupported) → Failed with the reason in `Error`. Failed rows stay skipped until reset in Notion.
+  - Permanent errors (removed, private, unsupported) → Failed with the reason in `Error`. Failed rows stay skipped until retried on the Processing page (which sets `Status` back to Not started in Notion) or reset in Notion.
   - A post appears in the gallery once its media and thumbnail are ready; its summary can follow later.
 - `MAX_DURATION_MIN` (off by default): longer videos → Failed "too long".
 - Disk cap 100 GB: the menu shows usage; Sync refuses new downloads above 95 GB and deletes nothing on its own.
@@ -100,13 +100,14 @@ v1 deliberately leaves out:
 The web page talks to the server only through the JSON API (`/api/posts`, `/api/tags`, `/api/sync`, …), so a future iOS app reuses it unchanged. Media is served with HTTP range requests (seeking, iOS AVPlayer).
 
 ### Gallery details
-- Header also holds an **Add URL** box that creates a Notion row (warns on duplicates).
+- **Header**: stays on screen as a translucent bar holding the wordmark, the search bar, a **+** button whose panel adds a URL by creating a Notion row (warns on duplicates), and the menu. `/` focuses search.
 - **Search**: server-side, debounced, keyword FTS5 with prefix matching over title, user caption, platform caption, summary, transcript, uploader, AI tags. Results keep timeline order and combine with selected tags as AND.
-- **Tag bar**: Notion tags as filled chips; AI tags in a second row as outlined chips. Top ~20 plus "show all". Filtering is instant (client-side) and AND across tags. Once tags are selected, the bar shows only tags present in the current results, with counts.
+- **Tag bar**: Notion tags as filled chips; AI tags in a second row as outlined chips. Top ~20 plus "show all"; on a phone each row is one line that scrolls sideways. Filtering is instant (client-side) and AND across tags. Once tags are selected, the bar shows only tags present in the current results, with counts, and a "12 of 162 posts · Clear" line appears.
 - **Grid**: one 9:16 tile per post (landscape centre-cropped), ordered by saved date, static thumbnails, a "1/5" badge on carousels and an icon on image posts.
 - **Group by date**: buckets are exclusive, first match wins: Today, Yesterday, This Week (weeks start Monday), Last Week, then one heading per month ("October 2026"). Empty groups are hidden. Grouping runs in the browser, in its local time. The checkbox state is remembered per browser.
-- **Pop-up player**: plays local media; swipe or arrow keys move through a post's items and through the filtered posts. Edits Notion tags, caption, summary, AI tags; promotes an AI tag to a Notion tag; deletes; links to the original.
-- **Menu**: the Sync button (or progress bar), then a ☰ panel with group-by-date, the auto-pull toggle and disk usage against `DISK_CAP_GB`.
+- **Pop-up player**: plays local media. It grows out of the tapped tile and shrinks back into the tile of the post it closes on. Swipe (the media follows the finger) or arrow keys move through a post's items and through the filtered posts; pull down, Escape or Back closes it. Motion uses springs and falls back to cross-fades under reduced motion. Edits Notion tags, caption, summary, AI tags; promotes an AI tag to a Notion tag; deletes; links to the original.
+- **Processing page** (`#processing`, linked from the ☰ panel and the last-Sync report): every row Sync has not finished, newest saved first, in three groups: Failed (Notion's `Error`, with Retry and Retry all), To retry (why the last Sync left it) and New. It shares the header, so Sync and the progress bar stay in reach, and refreshes as a Sync works through rows.
+- **Menu**: the Sync button (or progress bar), then a ☰ panel with the Processing link, group-by-date, the auto-pull toggle and disk usage against `DISK_CAP_GB`.
 - Responsive for phone browsers over Tailscale; follows the system dark/light theme.
 
 ## Directory layout
@@ -115,13 +116,14 @@ The web page talks to the server only through the JSON API (`/api/posts`, `/api/
 app/                     FastAPI package
   main.py                app factory; mounts the API and the static web page
   config.py              Settings, read from environment variables
-  api/                   JSON API routes: health, pull, sync, posts + search, settings (auto-pull,
-                         disk usage); /media serves DATA_DIR/media
+  api/                   JSON API routes: health, pull, sync, posts + search, processing (unfinished
+                         rows, retry), settings (auto-pull, disk usage); /media serves DATA_DIR/media
   db/                    SQLite connection, append-only MIGRATIONS, tag and search helpers
   web/                   static page, ES modules, no build: app.js (Sync, Add link, services), gallery.js
                          (grid, tag bar, search, date groups), player.js, editor.js (edit mode),
-                         menu.js (☰ panel), deleted.js (deleted-in-Notion dialog), tags.js,
-                         toast.js, app.css
+                         menu.js (☰ panel), deleted.js (deleted-in-Notion dialog),
+                         processing.js (#processing page), tags.js, toast.js, spring.js (springs and
+                         gesture helpers for the player's motion), app.css
   notion/                client, schema check, pull; mirror.py runs every Notion conversation
                          (pull, push, create, trash) under one lock
   pipeline/              Sync: urls, download, media (ffmpeg), transcribe, summarise; post.py runs
