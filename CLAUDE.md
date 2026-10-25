@@ -78,6 +78,7 @@ v1 deliberately leaves out:
 
 ### Sync job (processing)
 - Runs only from the Sync button, plus an optional nightly run (`NIGHTLY_SYNC`, off by default). New rows wait for the button.
+- A row's Retry on the Processing page processes that one row at once: next in a running Sync, else in a run of its own that skips the pull and leaves every other row for the next Sync. Retry all only sets the rows back to Not started for the next Sync.
 - One job at a time, one row at a time (platform rate limits). Server-side, so it survives closing the tab. Every open tab shows the progress bar ("12 / 40 · compressing <title>") with a cancel. Posts join the grid as each finishes.
 - Rows to process: `Status` = Not started. "Sync (N new)" counts only rows no Sync has tried: a row a Sync leaves for later keeps the reason (`retry_error`) and is retried by every Sync, but is no longer new.
 - Per row:
@@ -91,7 +92,7 @@ v1 deliberately leaves out:
   - Every step is idempotent: a finished step's output is reused, never redone.
   - Done only when every step succeeds.
   - Transient errors (network, rate limit, Ollama or whisper down) leave the row Not started for the next Sync.
-  - Permanent errors (removed, private, unsupported) → Failed with the reason in `Error`. Failed rows stay skipped until retried on the Processing page (which sets `Status` back to Not started in Notion) or reset in Notion.
+  - Permanent errors (removed, private, unsupported) → Failed with the reason in `Error`. Failed rows stay skipped until retried on the Processing page (which sets `Status` back to Not started in Notion, and with a row's Retry processes it at once) or reset in Notion.
   - A post appears in the gallery once its media and thumbnail are ready; its summary can follow later.
 - `MAX_DURATION_MIN` (off by default): longer videos → Failed "too long".
 - Disk cap 100 GB: the menu shows usage; Sync refuses new downloads above 95 GB and deletes nothing on its own.

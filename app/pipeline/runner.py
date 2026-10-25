@@ -1,8 +1,10 @@
-"""The Sync job: one run at a time, one post at a time, in the background."""
+"""The Sync job: one run at a time, one post at a time, in the background. A Retry on the
+Processing page joins the running job, or starts one of its own."""
 
 import asyncio
 import logging
 import sqlite3
+from collections import deque
 from contextlib import closing
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
@@ -28,6 +30,7 @@ class Cancelled(TryLater):
 @dataclass
 class Progress:
     running: bool = False
+    retry: bool = False  # started by a Retry: only the rows retried, without a pull
     total: int = 0
     handled: int = 0
     done: int = 0
@@ -50,18 +53,27 @@ class Syncer:
         self.progress = Progress()
         self._task: asyncio.Task | None = None
         self._cancelled = False
+        self._queue: deque[int] = deque()  # the posts this run has still to process
 
     @property
     def running(self) -> bool:
         return self._task is not None and not self._task.done()
 
     def start(self) -> None:
-        """Starts a run unless one is already going."""
-        if self.running:
-            return
-        self._cancelled = False
-        self.progress = Progress(running=True, started_at=_now())
-        self._task = asyncio.create_task(self._run())
+        """Starts a Sync unless a run is already going."""
+        if not self.running:
+            self._begin(pull=True)
+
+    async def retry_now(self, post_ids: list[int]) -> list[int]:
+        """Sets Failed rows back to Not started and processes them at once: next in the running
+        job, else in a run of their own, which skips the pull and leaves every other row for the
+        next Sync. Returns the posts reset, as Mirror.retry does."""
+        reset = await self.mirror.retry(post_ids)
+        if reset:
+            if not self.running:
+                self._begin(pull=False)
+            self._enqueue(reset, first=True)
+        return reset
 
     def cancel(self) -> None:
         self._cancelled = True
@@ -75,22 +87,35 @@ class Syncer:
         with closing(db.connect(self.db_path)) as conn:
             return {**asdict(self.progress), "new": count_new(conn)}
 
-    async def _run(self) -> None:
+    def _begin(self, pull: bool) -> None:
+        self._cancelled = False
+        self._queue = deque()
+        self.progress = Progress(running=True, retry=not pull, started_at=_now())
+        self._task = asyncio.create_task(self._run(pull))
+
+    def _enqueue(self, post_ids: list[int], first: bool = False) -> None:
+        added = [post_id for post_id in post_ids if post_id not in self._queue]
+        if first:
+            self._queue.extendleft(reversed(added))
+        else:
+            self._queue.extend(added)
+        self.progress.total += len(added)
+
+    async def _run(self, pull: bool) -> None:
         progress = self.progress
         try:
-            await self.mirror.pull(force=True)
+            if pull:
+                await self.mirror.pull(force=True)
             with closing(db.connect(self.db_path)) as conn:
                 self.pipeline.index_links(conn)
-                ids = [
-                    post_id
-                    for (post_id,) in conn.execute(
+                if pull:
+                    waiting = conn.execute(
                         "SELECT id FROM posts WHERE notion_state = 'synced'"
                         " AND status = 'Not started' ORDER BY saved_at DESC"
-                    )
-                ]
-                progress.total = len(ids)
+                    ).fetchall()
+                    self._enqueue([post_id for (post_id,) in waiting])
                 blocked_sites: set[str] = set()
-                for post_id in ids:
+                while self._queue:
                     if self._cancelled:
                         progress.stopped = "Cancelled"
                         break
@@ -98,7 +123,7 @@ class Syncer:
                     if used >= DISK_STOP_SHARE * self.disk_cap_bytes:
                         progress.stopped = "Stopped: the data folder is near DISK_CAP_GB"
                         break
-                    await self._one(conn, post_id, blocked_sites)
+                    await self._one(conn, self._queue.popleft(), blocked_sites)
         except Exception as error:
             logger.exception("Sync stopped")
             progress.stopped = f"Sync stopped: {error}"

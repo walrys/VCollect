@@ -16,6 +16,7 @@ router = APIRouter()
 
 class Retry(BaseModel):
     ids: list[int]
+    now: bool = False  # process them at once instead of at the next Sync
 
 
 @router.get("/processing")
@@ -62,15 +63,19 @@ async def processing(request: Request) -> dict:
 
 @router.post("/processing/retry")
 async def retry(choice: Retry, request: Request) -> dict:
-    """Sets the chosen Failed rows back to Not started, in Notion and here; the next Sync
-    processes them as new. Rows that are not Failed are left alone."""
+    """Sets the chosen Failed rows back to Not started, in Notion and here. With `now` they are
+    processed at once (next, if a Sync is running); otherwise the next Sync processes them as
+    new. Rows that are not Failed are left alone."""
     mirror = request.app.state.mirror
     if mirror is None:
         raise HTTPException(
             409, "Notion is not configured: set NOTION_TOKEN and NOTION_DATA_SOURCE_ID."
         )
     try:
-        reset = await mirror.retry(choice.ids)
+        if choice.now:
+            reset = await request.app.state.syncer.retry_now(choice.ids)
+        else:
+            reset = await mirror.retry(choice.ids)
     except (SchemaError, NotionError, HTTPError) as error:
         raise HTTPException(502, f"Could not reset every row in Notion: {error}") from error
     with closing(db.connect(request.app.state.settings.db_path)) as conn:

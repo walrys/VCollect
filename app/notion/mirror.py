@@ -103,8 +103,8 @@ class Mirror:
                     )
 
     async def retry(self, post_ids: list[int]) -> list[int]:
-        """Sets Failed rows back to Not started, in Notion and here, so the next Sync processes
-        them as new. Returns the posts reset; posts that are not Failed rows in Notion are left
+        """Sets Failed rows back to Not started, in Notion and here, so Sync processes them as
+        new. Returns the posts reset; posts that are not Failed rows in Notion are left
         alone. When Notion cannot be reached, the posts reset before then stay reset."""
         if not post_ids:
             return []

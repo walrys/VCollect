@@ -1,5 +1,6 @@
 // The Processing page (#processing): every row Sync has not finished, why, and Retry for the
-// failed ones. It shares the header, so the Sync button and progress bar stay in reach.
+// failed ones: a row's Retry processes it at once, Retry all leaves them for the next Sync. It
+// shares the header, so the Sync button and progress bar stay in reach.
 
 import { errorText, toast } from "./toast.js";
 
@@ -112,27 +113,35 @@ function rowItem(row) {
     button.className = "button secondary small";
     button.type = "button";
     button.textContent = "Retry";
-    button.onclick = () => retry([row.id], button);
+    button.title = "Process it again now";
+    button.onclick = () => retry([row.id], button, true);
     actions.append(button);
   }
   item.append(text, actions);
   return item;
 }
 
-// Sets failed rows back to Not started (in Notion too); the next Sync processes them as new.
-async function retry(ids, button) {
+// Sets failed rows back to Not started (in Notion too). With `now` the server processes them
+// at once, and the header shows its progress; otherwise the next Sync processes them as new.
+async function retry(ids, button, now = false) {
   if (!ids.length) return;
   button.disabled = true;
   try {
     const response = await fetch("/api/processing/retry", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ids }),
+      body: JSON.stringify({ ids, now }),
     });
     if (!response.ok) {
       toast(await errorText(response), "error");
+      return;
+    }
+    const { reset } = await response.json();
+    if (!reset.length) {
+      toast("Nothing to retry: no longer Failed in Notion.");
+    } else if (now) {
+      document.dispatchEvent(new CustomEvent("vcollect:retrying"));
     } else {
-      const { reset } = await response.json();
       toast(
         reset.length === 1
           ? "Reset. The next Sync processes it."

@@ -124,7 +124,8 @@ function showReport(progress) {
   const parts = [`${progress.done} done`, `${progress.failed} failed`, `${progress.later} to retry`];
   const ended = new Date(progress.finished_at).toLocaleTimeString();
   el("report-summary").textContent =
-    `Last Sync (${ended}): ${parts.join(" · ")}` + (progress.stopped ? ` · ${progress.stopped}` : "");
+    `Last ${progress.retry ? "retry" : "Sync"} (${ended}): ${parts.join(" · ")}` +
+    (progress.stopped ? ` · ${progress.stopped}` : "");
   el("report-problems").replaceChildren(
     ...progress.problems.map((problem) => {
       const row = document.createElement("li");
@@ -219,6 +220,11 @@ el("add-form").addEventListener("toggle", (event) => {
 });
 el("add-form").addEventListener("submit", addLink);
 document.addEventListener("vcollect:waiting", (event) => setSyncLabel(event.detail));
+// A row's Retry on the Processing page: the server is processing it now, in a running Sync
+// (which this tab already follows) or in a run of its own.
+document.addEventListener("vcollect:retrying", async () => {
+  if (!following) followSync(await (await fetch("/api/sync")).json());
+});
 el("sync").addEventListener("click", startSync);
 el("cancel").addEventListener("click", cancelSync);
 document.addEventListener("visibilitychange", refresh);

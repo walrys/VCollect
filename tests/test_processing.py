@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -98,6 +100,62 @@ def test_retry_sends_a_failed_row_back_to_sync_as_new(settings, samples):
         assert rows(client) == []
 
     assert progress["done"] == 1
+    assert notion.row(page)["status"] == "Done"
+
+
+def test_retry_now_processes_that_row_at_once_and_no_other(settings, samples):
+    notion = FakeNotion(FULL_SCHEMA)
+    page = notion.add_row(url="https://youtu.be/dvUGDMxl8OU")
+    services = fake_services([samples["small.mp4"]])
+    services.downloader.errors["dvUGDMxl8OU"] = PostFailed("Could not download: unavailable")
+
+    with TestClient(create_app(settings, notion=notion, services=services)) as client:
+        sync(client)
+        [row] = rows(client)
+        notion.add_row(url="https://youtu.be/bbbbbbbbbbb")
+        client.post("/api/pull")
+        pulls = notion.query_calls
+
+        del services.downloader.errors["dvUGDMxl8OU"]
+        answer = client.post("/api/processing/retry", json={"ids": [row["id"]], "now": True})
+        progress = wait_for_sync(client)
+        [waiting] = rows(client)
+
+    assert answer.json()["reset"] == [row["id"]]
+    assert (progress["retry"], progress["total"], progress["done"]) == (True, 1, 1)
+    assert notion.query_calls == pulls  # no pull: the row was just reset in Notion
+    assert notion.row(page)["status"] == "Done"
+    assert (waiting["url"], waiting["stage"]) == ("https://youtu.be/bbbbbbbbbbb", "new")
+
+
+def test_retry_now_during_a_sync_is_processed_next(settings, samples):
+    notion = FakeNotion(FULL_SCHEMA)
+    page = notion.add_row(url="https://youtu.be/fffffffffff")
+    services = fake_services([samples["small.mp4"]])
+    services.downloader.errors["fffffffffff"] = PostFailed("Could not download: unavailable")
+
+    with TestClient(create_app(settings, notion=notion, services=services)) as client:
+        sync(client)
+        [row] = rows(client)
+        del services.downloader.errors["fffffffffff"]
+        notion.add_row(url="https://youtu.be/aaaaaaaaaaa")
+        notion.add_row(url="https://youtu.be/bbbbbbbbbbb")  # newest, so the Sync takes it first
+        retries = []
+
+        def retry_once():  # pressed while the Sync works on its first row
+            if not retries:
+                retry = client.app.state.syncer.retry_now([row["id"]])
+                retries.append(asyncio.get_running_loop().create_task(retry))
+
+        services.summariser.before = retry_once
+        progress = sync(client)
+
+    assert [call[-11:] for call in services.downloader.calls[1:]] == [
+        "bbbbbbbbbbb",
+        "fffffffffff",
+        "aaaaaaaaaaa",
+    ]
+    assert (progress["retry"], progress["total"], progress["done"]) == (False, 3, 3)
     assert notion.row(page)["status"] == "Done"
 
 
