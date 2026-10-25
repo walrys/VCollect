@@ -1,11 +1,13 @@
-"""Downloaders: yt-dlp for videos, gallery-dl for Instagram image posts and carousels."""
+"""Downloaders: yt-dlp for videos, instaloader for Instagram image posts and carousels."""
 
 import asyncio
 import json
 import shutil
 from dataclasses import asdict, dataclass
+from http.cookiejar import MozillaCookieJar
 from pathlib import Path
 
+import instaloader
 import yt_dlp
 
 from app.pipeline.errors import LoginNeeded, PostFailed, TryLater
@@ -15,9 +17,12 @@ from app.pipeline.urls import PostUrl
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".webm", ".mov", ".m4v"}
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 
-# gallery-dl needs a login where yt-dlp does not, so its login wall gets its own site name:
-# it must never stop the run from fetching the reels yt-dlp manages without one.
+# Instagram rate-limits instaloader's anonymous API apart from the pages yt-dlp reads, so
+# instaloader's walls get their own site name: they must never stop the run fetching reels.
 INSTAGRAM_IMAGES = "Instagram image posts"
+INSTAGRAM_RATE_LIMIT = (
+    "Instagram is limiting anonymous requests for image posts: they wait for the next Sync"
+)
 
 # Lower-cased fragments of downloader errors.
 LOGIN_HINTS = ("login", "log in", "sign in", "authentication is required", "--cookies", "401")
@@ -63,7 +68,7 @@ class Download:
 
 
 class NotASingleVideo(Exception):
-    """yt-dlp found an Instagram image post or carousel, which gallery-dl handles."""
+    """yt-dlp found an Instagram image post or carousel, which instaloader handles."""
 
 
 class Downloader:
@@ -78,31 +83,49 @@ class Downloader:
         except NotASingleVideo:
             shutil.rmtree(dest)
             dest.mkdir(parents=True)
-            return await self._gallery_dl(post, dest)
+            return await asyncio.to_thread(self._instaloader, post, dest)
 
-    async def _gallery_dl(self, post: PostUrl, dest: Path) -> Download:
-        args = ["gallery-dl", "--directory", str(dest), "--filename", "{num:>02}.{extension}"]
-        args += ["--write-metadata", "--no-mtime"]
-        if self.cookies.exists():
-            args += ["--cookies", str(self.cookies)]
-        process = await asyncio.create_subprocess_exec(
-            *args, post.url, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
-        )
-        output = (await process.communicate())[0].decode(errors="replace")
+    def _instaloader(self, post: PostUrl, dest: Path) -> Download:
+        shortcode = post.url.rstrip("/").rsplit("/", 1)[-1]
+        with instaloader.Instaloader(quiet=True) as loader:
+            self._sign_in(loader)
+            try:
+                found = instaloader.Post.from_shortcode(loader.context, shortcode)
+                if found.typename == "GraphSidecar":
+                    urls = [
+                        node.video_url if node.is_video else node.display_url
+                        for node in found.get_sidecar_nodes()
+                    ]
+                else:
+                    urls = [found.video_url if found.is_video else found.url]
+                for number, url in enumerate(urls, start=1):
+                    # download_pic adds the extension; 01, 02, ... keep the carousel's order.
+                    loader.download_pic(str(dest / f"{number:02}"), url, found.date_utc)
+            except instaloader.exceptions.InstaloaderException as error:
+                raise _instaloader_error(error) from error
+
         items = _media_in(dest)
-        if process.returncode != 0 or not items:
-            raise classify(output, INSTAGRAM_IMAGES)
-
-        metadata_files = sorted(dest.glob("*.json"))
-        metadata = json.loads(metadata_files[0].read_text()) if metadata_files else {}
+        if len(items) < len(urls):
+            raise TryLater(f"Download incomplete: {len(items)} of {len(urls)} items")
         return Download(
             items=items,
             title="",
-            uploader=metadata.get("fullname") or metadata.get("username") or "",
-            caption=metadata.get("description") or "",
+            uploader=found.owner_username or "",
+            caption=found.caption or "",
             subtitles=None,
             thumbnail=None,
         )
+
+    def _sign_in(self, loader: instaloader.Instaloader) -> None:
+        """Gives instaloader the Instagram session in cookies.txt, if there is one."""
+        if not self.cookies.exists():
+            return
+        jar = MozillaCookieJar(self.cookies)
+        jar.load(ignore_discard=True, ignore_expires=True)
+        cookies = {cookie.name: cookie.value for cookie in jar if "instagram.com" in cookie.domain}
+        if {"sessionid", "csrftoken"} <= cookies.keys():
+            # instaloader only shows the name; the cookies carry the session.
+            loader.load_session(cookies.get("ds_user_id", "cookies.txt"), cookies)
 
     def _yt_dlp(self, post: PostUrl, dest: Path) -> Download:
         options = {
@@ -125,7 +148,9 @@ class Downloader:
             options["cookiefile"] = str(self.cookies)
         if post.platform == "instagram":
             # Instagram blocks anonymous clients that ask too fast; a backlog is hundreds of reels.
-            options |= {"sleep_interval": 3, "max_sleep_interval": 8}
+            # Its single-file MP4 is H.264 + AAC at <=720p, which compression copies as it is;
+            # the separate streams are VP9 (a re-encode) and wait twice, once per stream.
+            options |= {"format": "b/bv*+ba", "sleep_interval": 3, "max_sleep_interval": 8}
         try:
             info = self._yt_dlp_fetch(post, options)
         except yt_dlp.utils.DownloadError as error:
@@ -181,6 +206,16 @@ def classify(output: str, site: str) -> TryLater | PostFailed:
     if any(hint in text for hint in GONE_HINTS):
         return PostFailed(f"Could not download: {last}"[:500])
     return TryLater(f"Download failed: {last}"[:500] or "Download failed with no output")
+
+
+def _instaloader_error(error: instaloader.exceptions.InstaloaderException) -> TryLater | PostFailed:
+    text = str(error).lower()
+    # Anonymous over-use gets 401 "Please wait a few minutes before you try again".
+    if isinstance(error, instaloader.exceptions.TooManyRequestsException) or (
+        "401" in text and "please wait" in text
+    ):
+        return LoginNeeded(INSTAGRAM_IMAGES, INSTAGRAM_RATE_LIMIT)
+    return classify(f"{type(error).__name__}: {error}", INSTAGRAM_IMAGES)
 
 
 def _media_in(folder: Path) -> list[RawItem]:

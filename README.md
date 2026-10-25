@@ -90,9 +90,9 @@ Every service should report ready: `notion.configured: true` with `error: null`,
 
 Press **Sync** in the gallery to process every new row. Progress shows in place of the button. Rows that fail, or that a Sync leaves for later, are listed on the Processing page (☰ → Processing).
 
-## 6. Optional: logins for Instagram image posts and Reddit
+## 6. Optional: logins for Reddit and age-restricted Instagram posts
 
-YouTube and Instagram reels download without a login. Instagram image posts and carousels, and Reddit, need a logged-in browser session:
+YouTube and Instagram (reels, image posts and carousels) download without a login. Reddit and age-restricted Instagram posts need a logged-in browser session, which also raises Instagram's limit on anonymous requests:
 
 1. Sign in to the site in a browser **with a secondary account**. Instagram flags accounts that scrape, so keep your main one out of it.
 2. Export the cookies in Netscape `cookies.txt` format with a browser extension.
@@ -115,11 +115,11 @@ The PC's Ollama port must be published for this: add `ports: ["11434:11434"]` to
 ```sh
 docker compose up -d                 # start
 docker compose logs -f app           # follow the server log
-docker compose restart app           # restart; also refreshes yt-dlp and gallery-dl
+docker compose restart app           # restart; also refreshes yt-dlp and instaloader
 docker compose down                  # stop (data and models are kept)
 ```
 
-The `app` container upgrades yt-dlp and gallery-dl every time it starts, because their site extractors break often. If downloads start failing, restart `app` first.
+The `app` container upgrades yt-dlp and instaloader every time it starts, because their site extractors break often. If downloads start failing, restart `app` first.
 
 **Updating:**
 
@@ -153,4 +153,5 @@ Tests run offline. They use fakes for Notion, the downloaders, whisper and Ollam
 | Ollama ignores the GPU | Check that `COMPOSE_FILE` includes `docker-compose.gpu.yml`, and that `docker run --rm --gpus all ubuntu nvidia-smi` works on the host. |
 | Rows stay under "To retry" | Their reason is on the Processing page. Network errors, rate limits and AI services being down are retried by every Sync. |
 | "needs a login" | Add or refresh `DATA_DIR/cookies.txt` (step 6). Session cookies expire, so export them again. |
+| "Instagram is limiting anonymous requests" | Instagram image posts wait for the next Sync; reels carry on. It passes after a while; `cookies.txt` (step 6) raises the limit. |
 | Sync refuses to download | Disk usage is above 95% of `DISK_CAP_GB` (shown in the ☰ menu). Delete posts or raise the cap. |

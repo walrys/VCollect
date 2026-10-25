@@ -10,8 +10,11 @@ class TryLater(Exception):
 
 
 class LoginNeeded(TryLater):
-    """The site wants a logged-in session; the run skips the rest of that site's posts."""
+    """The site wants a logged-in session, or is limiting anonymous requests; the run skips the
+    rest of that site's posts."""
 
-    def __init__(self, site: str):
-        super().__init__(f"{site} needs a login: add its cookies to cookies.txt in the data folder")
+    def __init__(self, site: str, message: str = ""):
+        super().__init__(
+            message or f"{site} needs a login: add its cookies to cookies.txt in the data folder"
+        )
         self.site = site
