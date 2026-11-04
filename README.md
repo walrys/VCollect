@@ -153,5 +153,5 @@ Tests run offline. They use fakes for Notion, the downloaders, whisper and Ollam
 | Ollama ignores the GPU | Check that `COMPOSE_FILE` includes `docker-compose.gpu.yml`, and that `docker run --rm --gpus all ubuntu nvidia-smi` works on the host. |
 | Rows stay under "To retry" | Their reason is on the Processing page. Network errors, rate limits and AI services being down are retried by every Sync. |
 | "needs a login" | Add or refresh `DATA_DIR/cookies.txt` (step 6). Session cookies expire, so export them again. |
-| "Instagram is limiting anonymous requests" | Instagram image posts wait for the next Sync; reels carry on. It passes after a while; `cookies.txt` (step 6) raises the limit. |
+| "Instagram is limiting anonymous requests" | Carousels that mix videos and images wait for the next Sync; everything else carries on. It passes after a while; `cookies.txt` (step 6) raises the limit. |
 | Sync refuses to download | Disk usage is above 95% of `DISK_CAP_GB` (shown in the ☰ menu). Delete posts or raise the cap. |

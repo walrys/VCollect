@@ -54,6 +54,7 @@ class Syncer:
         self._task: asyncio.Task | None = None
         self._cancelled = False
         self._queue: deque[int] = deque()  # the posts this run has still to process
+        self._in_hand: int | None = None  # the post this run is processing
 
     @property
     def running(self) -> bool:
@@ -65,15 +66,31 @@ class Syncer:
             self._begin(pull=True)
 
     async def retry_now(self, post_ids: list[int]) -> list[int]:
-        """Sets Failed rows back to Not started and processes them at once: next in the running
-        job, else in a run of their own, which skips the pull and leaves every other row for the
-        next Sync. Returns the posts reset, as Mirror.retry does."""
-        reset = await self.mirror.retry(post_ids)
-        if reset:
+        """Processes the chosen rows at once: next in the running job, else in a run of their
+        own, which skips the pull and leaves every other row for the next Sync. Failed rows are
+        set back to Not started first (Mirror.retry); rows already Not started, such as those a
+        Sync left for later, go as they are. Returns the posts it will process: neither the one
+        in hand nor rows that are Done or gone from Notion."""
+        if not post_ids:
+            return []
+        await self.mirror.retry(post_ids)
+        with closing(db.connect(self.db_path)) as conn:
+            marks = ",".join("?" * len(post_ids))
+            waiting = {
+                post_id
+                for (post_id,) in conn.execute(
+                    "SELECT id FROM posts WHERE notion_state = 'synced'"
+                    f" AND status = 'Not started' AND id IN ({marks})",
+                    post_ids,
+                )
+            }
+        waiting.discard(self._in_hand)  # being processed already
+        chosen = [post_id for post_id in post_ids if post_id in waiting]
+        if chosen:
             if not self.running:
                 self._begin(pull=False)
-            self._enqueue(reset, first=True)
-        return reset
+            self._enqueue(chosen, first=True)
+        return chosen
 
     def cancel(self) -> None:
         self._cancelled = True
@@ -94,9 +111,12 @@ class Syncer:
         self._task = asyncio.create_task(self._run(pull))
 
     def _enqueue(self, post_ids: list[int], first: bool = False) -> None:
+        """Adds posts to this run: at the back, or with `first` at the front, where posts it
+        has queued already move up to."""
         added = [post_id for post_id in post_ids if post_id not in self._queue]
         if first:
-            self._queue.extendleft(reversed(added))
+            rest = [post_id for post_id in self._queue if post_id not in post_ids]
+            self._queue = deque([*post_ids, *rest])
         else:
             self._queue.extend(added)
         self.progress.total += len(added)
@@ -114,7 +134,7 @@ class Syncer:
                         " AND status = 'Not started' ORDER BY saved_at DESC"
                     ).fetchall()
                     self._enqueue([post_id for (post_id,) in waiting])
-                blocked_sites: set[str] = set()
+                blocked_sites: dict[str, str] = {}  # site -> why the run stopped asking it
                 while self._queue:
                     if self._cancelled:
                         progress.stopped = "Cancelled"
@@ -123,16 +143,21 @@ class Syncer:
                     if used >= DISK_STOP_SHARE * self.disk_cap_bytes:
                         progress.stopped = "Stopped: the data folder is near DISK_CAP_GB"
                         break
-                    await self._one(conn, self._queue.popleft(), blocked_sites)
+                    self._in_hand = self._queue.popleft()
+                    await self._one(conn, self._in_hand, blocked_sites)
+                    self._in_hand = None
         except Exception as error:
             logger.exception("Sync stopped")
             progress.stopped = f"Sync stopped: {error}"
         finally:
+            self._in_hand = None
             progress.running = False
             progress.current = progress.step = ""
             progress.finished_at = _now()
 
-    async def _one(self, conn: sqlite3.Connection, post_id: int, blocked_sites: set[str]) -> None:
+    async def _one(
+        self, conn: sqlite3.Connection, post_id: int, blocked_sites: dict[str, str]
+    ) -> None:
         progress = self.progress
         post = conn.execute(
             "SELECT url, user_caption FROM posts WHERE id = ?", (post_id,)
@@ -153,7 +178,7 @@ class Syncer:
             progress.later += 1
             retry_error = str(error)
             if error.site not in blocked_sites:
-                blocked_sites.add(error.site)
+                blocked_sites[error.site] = str(error)
                 self._problem(str(error))
         except TryLater as error:
             progress.later += 1

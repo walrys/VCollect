@@ -18,9 +18,11 @@ class FakeDownloader:
         self.subtitles = subtitles
         self.errors: dict[str, Exception] = {}
         self.calls: list[str] = []
+        self.skips: list[dict[str, str]] = []  # the sites each call was told the run skips
 
-    async def download(self, link: PostUrl, dest: Path) -> Download:
+    async def download(self, link: PostUrl, dest: Path, skip_sites=None) -> Download:
         self.calls.append(link.url)
+        self.skips.append(dict(skip_sites or {}))
         for fragment, error in self.errors.items():
             if fragment in link.url:
                 raise error

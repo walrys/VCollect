@@ -1,4 +1,4 @@
-"""The Processing page: the Notion rows Sync has not finished, why, and retrying failed ones."""
+"""The Processing page: the Notion rows Sync has not finished, why, and retrying them."""
 
 from contextlib import closing
 
@@ -63,9 +63,10 @@ async def processing(request: Request) -> dict:
 
 @router.post("/processing/retry")
 async def retry(choice: Retry, request: Request) -> dict:
-    """Sets the chosen Failed rows back to Not started, in Notion and here. With `now` they are
-    processed at once (next, if a Sync is running); otherwise the next Sync processes them as
-    new. Rows that are not Failed are left alone."""
+    """Sets the chosen Failed rows back to Not started, in Notion and here, and the next Sync
+    processes them as new; rows that are not Failed are left alone. With `now` the chosen rows,
+    Failed or left for later, are processed at once (next, if a Sync is running), and `reset`
+    lists the rows that will be."""
     mirror = request.app.state.mirror
     if mirror is None:
         raise HTTPException(

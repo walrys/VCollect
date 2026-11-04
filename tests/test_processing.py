@@ -159,6 +159,83 @@ def test_retry_now_during_a_sync_is_processed_next(settings, samples):
     assert notion.row(page)["status"] == "Done"
 
 
+def test_retry_now_processes_a_row_left_for_later_at_once(settings, samples):
+    notion = FakeNotion(FULL_SCHEMA)
+    page = notion.add_row(url="https://www.instagram.com/reel/AAA/")
+    notion.add_row(url="https://www.instagram.com/reel/BBB/")
+    services = fake_services([samples["small.mp4"]])
+    services.downloader.errors["instagram.com"] = LoginNeeded("Instagram")
+
+    with TestClient(create_app(settings, notion=notion, services=services)) as client:
+        sync(client)
+        later = {row["url"]: row for row in rows(client)}
+        assert {row["stage"] for row in later.values()} == {"later"}
+        pulls = notion.query_calls
+
+        del services.downloader.errors["instagram.com"]
+        answer = client.post(
+            "/api/processing/retry",
+            json={"ids": [later["https://www.instagram.com/reel/AAA/"]["id"]], "now": True},
+        )
+        progress = wait_for_sync(client)
+        [waiting] = rows(client)
+
+    assert answer.json()["reset"] == [later["https://www.instagram.com/reel/AAA/"]["id"]]
+    assert (progress["retry"], progress["total"], progress["done"]) == (True, 1, 1)
+    assert notion.query_calls == pulls
+    assert notion.row(page)["status"] == "Done"
+    assert (waiting["url"], waiting["stage"]) == ("https://www.instagram.com/reel/BBB/", "later")
+
+
+def test_retry_now_moves_a_row_the_sync_has_queued_to_the_front(settings, samples):
+    notion = FakeNotion(FULL_SCHEMA)
+    notion.add_row(url="https://www.instagram.com/reel/AAA/")
+    notion.add_row(url="https://www.instagram.com/reel/BBB/")
+    notion.add_row(url="https://www.instagram.com/reel/CCC/")  # newest, so the Sync takes it first
+    services = fake_services([samples["small.mp4"]])
+    services.downloader.errors["instagram.com"] = LoginNeeded("Instagram")
+
+    with TestClient(create_app(settings, notion=notion, services=services)) as client:
+        sync(client)
+        oldest = rows(client)[-1]
+        del services.downloader.errors["instagram.com"]
+        retries = []
+
+        def retry_once():  # pressed while the Sync works on its first row
+            if not retries:
+                retry = client.app.state.syncer.retry_now([oldest["id"]])
+                retries.append(asyncio.get_running_loop().create_task(retry))
+
+        services.summariser.before = retry_once
+        progress = sync(client)
+
+    assert [call[-4:-1] for call in services.downloader.calls[-3:]] == ["CCC", "AAA", "BBB"]
+    assert (progress["total"], progress["done"]) == (3, 3)
+
+
+def test_retry_now_leaves_out_the_row_in_hand(settings, samples):
+    notion = FakeNotion(FULL_SCHEMA)
+    notion.add_row(url="https://www.instagram.com/reel/AAA/")
+    services = fake_services([samples["small.mp4"]])
+    services.downloader.errors["instagram.com"] = LoginNeeded("Instagram")
+
+    with TestClient(create_app(settings, notion=notion, services=services)) as client:
+        sync(client)
+        [row] = rows(client)
+        del services.downloader.errors["instagram.com"]
+        summarise, answers = services.summariser.summarise, []
+
+        async def retry_first(post):  # pressed while the Sync works on that very row
+            answers.append(await client.app.state.syncer.retry_now([row["id"]]))
+            return await summarise(post)
+
+        services.summariser.summarise = retry_first
+        progress = sync(client)
+
+    assert answers == [[]]
+    assert (progress["total"], progress["done"]) == (1, 1)  # not queued a second time
+
+
 def test_retry_resets_nothing_when_notion_is_down(settings, samples):
     notion = FakeNotion(FULL_SCHEMA)
     page = notion.add_row(url="https://www.instagram.com/indiegamejoe")

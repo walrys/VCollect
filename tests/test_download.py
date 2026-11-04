@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
 import instaloader
 import pytest
 import yt_dlp
@@ -52,6 +53,127 @@ def test_instagram_image_posts_fall_back_to_instaloader(monkeypatch, tmp_path):
         monkeypatch, tmp_path, "https://www.instagram.com/p/AbC/", NotASingleVideo()
     )
     assert (used, result) == (["yt-dlp", "instaloader"], "from instaloader")
+
+
+def page(*kinds):
+    """What yt-dlp reads of an Instagram carousel of `kinds` (video, image or broken video)."""
+    entries = [
+        {
+            "id": f"item{n}",
+            "formats": [{"url": f"https://cdn/{n}.mp4"}] if kind == "video" else [],
+            "duration": None if kind == "image" else 12.0,
+            "thumbnails": [{"url": f"https://cdn/{n}-small.jpg"}, {"url": f"https://cdn/{n}.jpg"}],
+        }
+        for n, kind in enumerate(kinds, start=1)
+    ]
+    return {
+        "_type": "playlist",
+        "title": "Post by someone",
+        "uploader": "Some One",
+        "description": "A caption",
+        "entries": entries,
+    }
+
+
+def fake_cdn(monkeypatch, refuse: str = "") -> list[str]:
+    """Serves a JPEG for every image URL, except 403 for URLs containing `refuse`."""
+    fetched = []
+
+    def get(self, url):
+        fetched.append(url)
+        request = httpx.Request("GET", url)
+        if refuse and refuse in url:
+            return httpx.Response(403, request=request)
+        headers = {"content-type": "image/jpeg"}
+        return httpx.Response(200, content=b"jpeg", headers=headers, request=request)
+
+    monkeypatch.setattr(httpx.Client, "get", get)
+    return fetched
+
+
+def download_page(monkeypatch, tmp_path, info, skip_sites=None):
+    """Downloads an Instagram post yt-dlp read as `info`; instaloader answers "instaloader"."""
+    used = []
+
+    def fake_yt_dlp(self, post, dest):
+        raise NotASingleVideo(info)
+
+    def fake_instaloader(self, post, dest):
+        used.append("instaloader")
+        return "instaloader"
+
+    monkeypatch.setattr(Downloader, "_yt_dlp", fake_yt_dlp)
+    monkeypatch.setattr(Downloader, "_instaloader", fake_instaloader)
+    downloader = Downloader(tmp_path / "cookies.txt")
+    post = normalise("https://www.instagram.com/p/AbC/")
+    result = asyncio.run(downloader.download(post, tmp_path / "raw", skip_sites or {}))
+    return used, result
+
+
+def test_image_posts_come_from_the_page_yt_dlp_read(monkeypatch, tmp_path):
+    fetched = fake_cdn(monkeypatch)
+    used, download = download_page(monkeypatch, tmp_path, page(*["image"] * 11))
+
+    assert used == []
+    assert fetched[:2] == ["https://cdn/1.jpg", "https://cdn/2.jpg"]  # the full size, last listed
+    assert [item.file for item in download.items][-2:] == ["10.jpg", "11.jpg"]
+    assert {item.kind for item in download.items} == {"image"}
+    assert (download.title, download.uploader, download.caption) == (
+        "Post by someone",
+        "Some One",
+        "A caption",
+    )
+
+
+def test_a_single_image_post_comes_from_the_page_too(monkeypatch, tmp_path):
+    fake_cdn(monkeypatch)
+    [image] = page("image")["entries"]
+    used, download = download_page(monkeypatch, tmp_path, {**image, "title": "Post by someone"})
+    assert (used, download.items) == ([], [RawItem("01.jpg", "image")])
+
+
+@pytest.mark.parametrize("kinds", [("image", "video"), ("image", "broken video")])
+def test_carousels_with_videos_go_to_instaloader(monkeypatch, tmp_path, kinds):
+    fetched = fake_cdn(monkeypatch)
+    used, result = download_page(monkeypatch, tmp_path, page(*kinds))
+    assert (used, result, fetched) == (["instaloader"], "instaloader", [])
+
+
+def test_a_run_that_instaloader_refused_stops_asking_it(monkeypatch, tmp_path):
+    fake_cdn(monkeypatch)
+    skip = {INSTAGRAM_IMAGES: "Instagram is limiting anonymous requests"}
+    with pytest.raises(LoginNeeded, match="limiting anonymous requests") as caught:
+        download_page(monkeypatch, tmp_path, page("image", "video"), skip)
+    assert caught.value.site == INSTAGRAM_IMAGES
+
+    # Posts yt-dlp can see still download.
+    used, download = download_page(monkeypatch, tmp_path / "next", page("image", "image"), skip)
+    assert (used, len(download.items)) == ([], 2)
+
+
+def test_an_image_the_cdn_refuses_is_retried(monkeypatch, tmp_path):
+    fake_cdn(monkeypatch, refuse="/2.jpg")
+    with pytest.raises(TryLater, match="403"):
+        download_page(monkeypatch, tmp_path, page("image", "image"))
+
+
+@pytest.mark.parametrize(
+    "info",
+    [
+        {**page("image")["entries"][0], "title": "an image post"},
+        {**page("image", "video"), "entries": iter(page("image", "video")["entries"])},
+    ],
+)
+def test_yt_dlp_hands_over_what_it_read_of_image_posts(monkeypatch, tmp_path, info):
+    monkeypatch.setattr(yt_dlp.YoutubeDL, "extract_info", lambda self, url, **kwargs: info)
+    with pytest.raises(NotASingleVideo) as caught:
+        Downloader(tmp_path / "cookies.txt")._yt_dlp_fetch(
+            normalise("https://www.instagram.com/p/AbC/"), {"quiet": True}
+        )
+    read = caught.value.info
+    assert read.get("title") == info.get("title")
+    if "entries" in info:
+        assert [entry["id"] for entry in read["entries"]] == ["item1", "item2"]
 
 
 @pytest.mark.parametrize(

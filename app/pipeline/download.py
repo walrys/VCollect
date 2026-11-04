@@ -1,12 +1,16 @@
-"""Downloaders: yt-dlp for videos, instaloader for Instagram image posts and carousels."""
+"""Downloaders: yt-dlp for videos and the images it can see; instaloader for the Instagram
+carousels that mix videos and images."""
 
 import asyncio
 import json
 import shutil
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from http.cookiejar import MozillaCookieJar
 from pathlib import Path
+from types import MappingProxyType
 
+import httpx
 import instaloader
 import yt_dlp
 
@@ -16,12 +20,15 @@ from app.pipeline.urls import PostUrl
 
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".webm", ".mov", ".m4v"}
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+IMAGE_TYPES = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}
 
 # Instagram rate-limits instaloader's anonymous API apart from the pages yt-dlp reads, so
-# instaloader's walls get their own site name: they must never stop the run fetching reels.
+# instaloader's walls get their own site name: they must never stop the run fetching reels
+# or the image posts yt-dlp can see.
 INSTAGRAM_IMAGES = "Instagram image posts"
 INSTAGRAM_RATE_LIMIT = (
-    "Instagram is limiting anonymous requests for image posts: they wait for the next Sync"
+    "Instagram is limiting anonymous requests for carousels with videos: they wait for the next"
+    " Sync"
 )
 
 # Lower-cased fragments of downloader errors.
@@ -68,7 +75,11 @@ class Download:
 
 
 class NotASingleVideo(Exception):
-    """yt-dlp found an Instagram image post or carousel, which instaloader handles."""
+    """yt-dlp found an Instagram image post or carousel. `info` is what it read of the post."""
+
+    def __init__(self, info: dict | None = None):
+        super().__init__("Not a single video")
+        self.info = info or {}
 
 
 class Downloader:
@@ -76,14 +87,41 @@ class Downloader:
         self.cookies = cookies
         self.max_duration_min = max_duration_min
 
-    async def download(self, post: PostUrl, dest: Path) -> Download:
+    async def download(
+        self, post: PostUrl, dest: Path, skip_sites: Mapping[str, str] = MappingProxyType({})
+    ) -> Download:
+        """`skip_sites` maps each site this run stopped asking to the reason it stopped."""
         dest.mkdir(parents=True, exist_ok=True)
         try:
             return await asyncio.to_thread(self._yt_dlp, post, dest)
-        except NotASingleVideo:
+        except NotASingleVideo as found:
             shutil.rmtree(dest)
             dest.mkdir(parents=True)
+            if urls := _image_urls(found.info):
+                return await asyncio.to_thread(self._save_images, found.info, urls, dest)
+            if INSTAGRAM_IMAGES in skip_sites:
+                raise LoginNeeded(INSTAGRAM_IMAGES, skip_sites[INSTAGRAM_IMAGES]) from None
             return await asyncio.to_thread(self._instaloader, post, dest)
+
+    def _save_images(self, info: dict, urls: list[str], dest: Path) -> Download:
+        """Saves an image post from the page yt-dlp read, without asking Instagram again."""
+        with httpx.Client(timeout=60, follow_redirects=True) as client:
+            for number, url in enumerate(urls, start=1):
+                try:
+                    response = client.get(url)
+                    response.raise_for_status()
+                except httpx.HTTPError as error:
+                    raise TryLater(f"Download failed: {error}"[:500]) from error
+                kind = response.headers.get("content-type", "").split(";")[0].strip()
+                (dest / f"{number:02}{IMAGE_TYPES.get(kind, '.jpg')}").write_bytes(response.content)
+        return Download(
+            items=_media_in(dest),
+            title=info.get("title") or "",
+            uploader=info.get("uploader") or info.get("channel") or "",
+            caption=info.get("description") or "",
+            subtitles=None,
+            thumbnail=None,
+        )
 
     def _instaloader(self, post: PostUrl, dest: Path) -> Download:
         shortcode = post.url.rstrip("/").rsplit("/", 1)[-1]
@@ -183,9 +221,11 @@ class Downloader:
         with yt_dlp.YoutubeDL(options) as ydl:
             info = ydl.extract_info(post.url, download=False, process=False)
             if info.get("_type") in {"playlist", "multi_video"}:
-                if post.platform == "instagram":
-                    raise NotASingleVideo  # a carousel
+                if post.platform == "instagram":  # a carousel
+                    raise NotASingleVideo({**info, "entries": list(info.get("entries") or [])})
                 raise PostFailed("Not a single post: a playlist or channel")
+            if post.platform == "instagram" and _is_image(info):
+                raise NotASingleVideo(info)
             minutes = (info.get("duration") or 0) / 60
             if self.max_duration_min and minutes > self.max_duration_min:
                 raise PostFailed(
@@ -206,6 +246,24 @@ def classify(output: str, site: str) -> TryLater | PostFailed:
     if any(hint in text for hint in GONE_HINTS):
         return PostFailed(f"Could not download: {last}"[:500])
     return TryLater(f"Download failed: {last}"[:500] or "Download failed with no output")
+
+
+def _is_image(item: dict | None) -> bool:
+    """An item yt-dlp found no video in, though it has the pictures (yt-dlp's thumbnails)."""
+    return bool(
+        item
+        and item.get("thumbnails")
+        and not (item.get("formats") or item.get("url") or item.get("duration"))
+    )
+
+
+def _image_urls(info: dict) -> list[str]:
+    """Each item's full-size image, when the post is all images yt-dlp has pictures of."""
+    items = info.get("entries") or ([info] if info else [])
+    if not all(_is_image(item) for item in items):
+        return []  # videos among them, which instaloader fetches
+    # yt-dlp lists thumbnails worst to best; Instagram's last is the uncropped original.
+    return [item["thumbnails"][-1]["url"] for item in items]
 
 
 def _instaloader_error(error: instaloader.exceptions.InstaloaderException) -> TryLater | PostFailed:

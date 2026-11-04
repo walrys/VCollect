@@ -1,6 +1,7 @@
 from fastapi.testclient import TestClient
 
 from app.main import create_app
+from app.pipeline.download import INSTAGRAM_IMAGES
 from app.pipeline.errors import LoginNeeded
 from tests.fakes.notion import FULL_SCHEMA, FakeNotion
 from tests.fakes.services import fake_services
@@ -54,6 +55,38 @@ def test_a_login_wall_skips_the_rest_of_that_site(settings, samples):
     assert progress["problems"] == [
         "Instagram needs a login: add its cookies to cookies.txt in the data folder"
     ]
+
+
+def test_skipped_posts_keep_the_walls_reason(settings, samples):
+    notion = FakeNotion(FULL_SCHEMA)
+    for code in ("AAA", "BBB"):
+        notion.add_row(url=f"https://www.instagram.com/reel/{code}/")
+    services = fake_services([samples["small.mp4"]])
+    reason = "Instagram is limiting anonymous requests: they wait for the next Sync"
+    services.downloader.errors["instagram.com"] = LoginNeeded("Instagram", reason)
+
+    with TestClient(create_app(settings, notion=notion, services=services)) as client:
+        client.post("/api/sync")
+        wait_for_sync(client)
+        reasons = [row["reason"] for row in client.get("/api/processing").json()["rows"]]
+
+    assert reasons == [reason, reason]
+
+
+def test_the_downloader_hears_which_walls_the_run_met(settings, samples):
+    # A post is only known as an image post once yt-dlp has read it, so the downloader has to
+    # skip the image-post wall itself: the pipeline only knows the link's site, "Instagram".
+    notion = FakeNotion(FULL_SCHEMA)
+    for code in ("AAA", "BBB"):
+        notion.add_row(url=f"https://www.instagram.com/p/{code}/")
+    services = fake_services([samples["small.mp4"]])
+    services.downloader.errors["instagram.com"] = LoginNeeded(INSTAGRAM_IMAGES, "a reason")
+
+    with TestClient(create_app(settings, notion=notion, services=services)) as client:
+        client.post("/api/sync")
+        wait_for_sync(client)
+
+    assert services.downloader.skips == [{}, {INSTAGRAM_IMAGES: "a reason"}]
 
 
 def test_cancel_stops_at_the_next_step(settings, samples):

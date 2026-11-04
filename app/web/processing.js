@@ -1,6 +1,6 @@
-// The Processing page (#processing): every row Sync has not finished, why, and Retry for the
-// failed ones: a row's Retry processes it at once, Retry all leaves them for the next Sync. It
-// shares the header, so the Sync button and progress bar stay in reach.
+// The Processing page (#processing): every row Sync has not finished, why, and Retry: a failed
+// or to-retry row's Retry processes it at once, Retry all leaves the failed ones for the next
+// Sync. It shares the header, so the Sync button and progress bar stay in reach.
 
 import { errorText, toast } from "./toast.js";
 
@@ -108,7 +108,7 @@ function rowItem(row) {
     notion.textContent = "Notion ↗";
     actions.append(notion);
   }
-  if (row.stage === "failed") {
+  if (row.stage === "failed" || row.stage === "later") {
     const button = document.createElement("button");
     button.className = "button secondary small";
     button.type = "button";
@@ -121,8 +121,9 @@ function rowItem(row) {
   return item;
 }
 
-// Sets failed rows back to Not started (in Notion too). With `now` the server processes them
-// at once, and the header shows its progress; otherwise the next Sync processes them as new.
+// With `now` the server processes the rows at once (failed ones set back to Not started first),
+// and the header shows its progress. Otherwise it sets failed rows back to Not started (in
+// Notion too), and the next Sync processes them as new.
 async function retry(ids, button, now = false) {
   if (!ids.length) return;
   button.disabled = true;
@@ -138,7 +139,11 @@ async function retry(ids, button, now = false) {
     }
     const { reset } = await response.json();
     if (!reset.length) {
-      toast("Nothing to retry: no longer Failed in Notion.");
+      toast(
+        now
+          ? "Nothing to retry: it is being processed now, or already done."
+          : "Nothing to retry: no longer Failed in Notion.",
+      );
     } else if (now) {
       document.dispatchEvent(new CustomEvent("vcollect:retrying"));
     } else {

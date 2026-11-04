@@ -4,10 +4,11 @@ import json
 import shutil
 import sqlite3
 import tempfile
-from collections.abc import Callable, Container
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from types import MappingProxyType
 
 import httpx
 
@@ -59,9 +60,10 @@ class Pipeline:
         conn: sqlite3.Connection,
         post_id: int,
         on_step: Callable[[str], None],
-        skip_sites: Container[str] = (),
+        skip_sites: Mapping[str, str] = MappingProxyType({}),
     ) -> None:
-        """Raises PostFailed once the row is marked Failed, or TryLater to leave it for later."""
+        """Raises PostFailed once the row is marked Failed, or TryLater to leave it for later.
+        `skip_sites` maps each site the run stopped asking to the reason it stopped."""
         try:
             await self._steps(conn, post_id, on_step, skip_sites)
         except PostFailed as failure:
@@ -72,11 +74,11 @@ class Pipeline:
         post = _post(conn, post_id)
         link = normalise(post["url"])
         if link.site in skip_sites:
-            raise LoginNeeded(link.site)
+            raise LoginNeeded(link.site, skip_sites[link.site])
         _reject_duplicate(conn, post, link)
 
         if not post["media_ready"]:
-            await self._fetch_media(conn, post_id, link, on_step)
+            await self._fetch_media(conn, post_id, link, on_step, skip_sites)
 
         post = _post(conn, post_id)
         if post["transcript"] is None:
@@ -99,13 +101,13 @@ class Pipeline:
         on_step("saving to Notion")
         await self._finish(conn, post_id)
 
-    async def _fetch_media(self, conn, post_id: int, link: PostUrl, on_step) -> None:
+    async def _fetch_media(self, conn, post_id: int, link: PostUrl, on_step, skip_sites) -> None:
         work = self.work_root / str(post_id)
         manifest = work / "download.json"
         if not manifest.exists():
             on_step("downloading")
             shutil.rmtree(work, ignore_errors=True)  # leftovers of an interrupted download
-            download = await self.services.downloader.download(link, work / "raw")
+            download = await self.services.downloader.download(link, work / "raw", skip_sites)
             manifest.write_text(download.to_json())
         download = Download.from_json(manifest.read_text())
 
