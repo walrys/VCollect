@@ -1,4 +1,6 @@
-"""The gallery's posts: list and search them, edit them, delete them, add new links."""
+"""The gallery's posts: list and search them, edit them, delete them, add new links.
+Every Notion row is a post from its first pull on; until Sync has fetched it, it shows as a
+placeholder with its status."""
 
 import shutil
 import sqlite3
@@ -19,6 +21,7 @@ from app.notion.schema import SchemaError
 from app.pipeline.errors import PostFailed
 from app.pipeline.post import index_links
 from app.pipeline.urls import normalise
+from app.pipeline.web import cookie_status
 
 MAX_TAG_LENGTH = 100
 MAX_TAGS = 100
@@ -49,9 +52,9 @@ class DeletedChoice(BaseModel):
 
 @router.get("/posts")
 async def list_posts(request: Request) -> dict:
-    """All visible posts, newest saved first. The page filters by tag itself, instantly."""
+    """Every post, newest saved first. The page filters by tag itself, instantly."""
     with closing(_connect(request)) as conn:
-        return {"posts": _load(conn, "posts.media_ready = 1")}
+        return {"posts": _load(conn, "1")}
 
 
 @router.get("/search")
@@ -59,6 +62,35 @@ async def search(request: Request, q: str = "") -> dict:
     """IDs of the posts matching every word of `q`; the page keeps its own order."""
     with closing(_connect(request)) as conn:
         return {"ids": db.search(conn, q)}
+
+
+@router.get("/posts/{post_id}/page")
+async def page(post_id: int, request: Request) -> dict:
+    """The post's readable copy: sanitised HTML whose images are under /media."""
+    with closing(_connect(request)) as conn:
+        row = conn.execute("SELECT page_file FROM posts WHERE id = ?", (post_id,)).fetchone()
+    if row is None or not row["page_file"]:
+        raise HTTPException(404, "This post has no readable copy")
+    path = request.app.state.settings.data_dir / "media" / row["page_file"]
+    try:
+        return {"html": path.read_text(encoding="utf-8")}
+    except FileNotFoundError as error:
+        raise HTTPException(404, "This post has no readable copy") from error
+
+
+@router.get("/posts/{post_id}/cookies")
+async def cookies(post_id: int, request: Request) -> dict:
+    """Whether cookies.txt holds a session for the post's site (missing, expired or present),
+    read from the file alone: the site is not asked."""
+    with closing(_connect(request)) as conn:
+        row = conn.execute("SELECT url FROM posts WHERE id = ?", (post_id,)).fetchone()
+    if row is None:
+        raise HTTPException(404, "No such post")
+    try:
+        url = normalise(row["url"]).url
+    except PostFailed as error:
+        raise HTTPException(422, str(error)) from error
+    return cookie_status(request.app.state.settings.cookies_path, url)
 
 
 @router.patch("/posts/{post_id}")
@@ -288,8 +320,9 @@ def _connect(request: Request) -> sqlite3.Connection:
 
 def _load(conn: sqlite3.Connection, where: str, params: tuple = ()) -> list[dict]:
     posts = conn.execute(
-        "SELECT id, title, user_caption, uploader, platform, url, notion_url, saved_at,"
-        f" summary, thumb_file, notion_state FROM posts WHERE {where}"
+        "SELECT id, title, user_caption, uploader, platform_caption, url, notion_url, saved_at,"
+        " summary, thumb_file, notion_state, status, error, retry_error, needs_login,"
+        f" media_ready, kind, page_file FROM posts WHERE {where}"
         " ORDER BY saved_at DESC, id DESC",
         params,
     ).fetchall()
@@ -324,12 +357,19 @@ def _load(conn: sqlite3.Connection, where: str, params: tuple = ()) -> list[dict
             "title": post["title"],
             "caption": post["user_caption"],
             "uploader": post["uploader"],
-            "platform": post["platform"],
+            "platform": _platform(post["url"]),
             "url": post["url"],
             "notion_url": post["notion_url"],
             "saved_at": post["saved_at"],
             "summary": post["summary"],
-            "thumb": f"/media/{post['thumb_file']}",
+            # media: a tile from its video or image; page: a title card, with a readable copy
+            # (`page`) unless it needs JavaScript; placeholder: nothing fetched yet.
+            "kind": post["kind"] if post["media_ready"] else "placeholder",
+            "status": _status(post),
+            "reason": post["error"] if post["status"] == "Failed" else post["retry_error"],
+            "thumb": f"/media/{post['thumb_file']}" if post["thumb_file"] else None,
+            "page": f"/api/posts/{post['id']}/page" if post["page_file"] else None,
+            "description": post["platform_caption"] if post["kind"] == "page" else "",
             "state": post["notion_state"],
             "tags": tags[post["id"]]["notion"],
             "ai_tags": tags[post["id"]]["ai"],
@@ -337,3 +377,23 @@ def _load(conn: sqlite3.Connection, where: str, params: tuple = ()) -> list[dict
         }
         for post in posts
     ]
+
+
+def _status(post: sqlite3.Row) -> str:
+    """done, failed, or why it is not processed yet: new (no Sync has tried it), login (a
+    session in cookies.txt would let it through) or waiting (for a passing problem)."""
+    if post["status"] == "Done":
+        return "done"
+    if post["status"] == "Failed":
+        return "failed"
+    if not post["retry_error"]:
+        return "new"
+    return "login" if post["needs_login"] else "waiting"
+
+
+def _platform(url: str) -> str | None:
+    """instagram, youtube, reddit or other, for the site's logo; None for a row with no link."""
+    try:
+        return normalise(url).platform
+    except PostFailed:
+        return None

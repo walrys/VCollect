@@ -1,7 +1,8 @@
-// The player's edit mode: caption, summary and both kinds of tags. Save hands the draft back;
-// the player sends it to the server, which passes it on to Notion.
+// The player's edit mode: caption, summary and both kinds of tags (a placeholder has only its
+// caption and Notion tags). Save hands the draft back; the player sends it to the server, which
+// passes it on to Notion.
 
-export function renderEditor(form, post, { knownTags, onSave, onCancel }) {
+export function renderEditor(form, post, { knownTags, onSave, onCancel, placeholder = false }) {
   const draft = { tags: [...post.tags], ai_tags: [...post.ai_tags] };
   const caption = textarea(post.caption, 2);
   const summary = textarea(post.summary, 6);
@@ -25,21 +26,22 @@ export function renderEditor(form, post, { knownTags, onSave, onCancel }) {
     tagRows.ai_tags.addTyped();
     save.disabled = true;
     try {
-      await onSave({
-        caption: caption.value,
-        summary: summary.value,
-        tags: draft.tags,
-        ai_tags: draft.ai_tags,
-      });
+      const changes = { caption: caption.value, tags: draft.tags };
+      if (!placeholder) Object.assign(changes, { summary: summary.value, ai_tags: draft.ai_tags });
+      await onSave(changes);
     } finally {
       save.disabled = false;
     }
   };
   form.replaceChildren(
-    field("Caption", caption),
-    field("Summary", summary),
-    field("Tags", tagRows.tags.element),
-    field("AI tags", tagRows.ai_tags.element),
+    ...(placeholder
+      ? [field("Caption", caption), field("Tags", tagRows.tags.element)]
+      : [
+          field("Caption", caption),
+          field("Summary", summary),
+          field("Tags", tagRows.tags.element),
+          field("AI tags", tagRows.ai_tags.element),
+        ]),
     buttons,
   );
   caption.focus();

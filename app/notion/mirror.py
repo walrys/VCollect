@@ -133,8 +133,8 @@ class Mirror:
                         raise
                     with conn:
                         conn.execute(
-                            "UPDATE posts SET status = 'Not started', error = '', retry_error = ''"
-                            " WHERE id = ?",
+                            "UPDATE posts SET status = 'Not started', error = '', retry_error = '',"
+                            " needs_login = 0 WHERE id = ?",
                             (post_id,),
                         )
                     reset.append(post_id)

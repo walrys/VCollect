@@ -945,6 +945,10 @@ button.chip.selected:hover {
   color: #000;
 }
 
+.badge.danger {
+  background: rgb(255 59 48 / 0.92);
+}
+
 .no-match {
   padding: 48px 0;
   color: var(--muted);
@@ -1731,7 +1735,467 @@ a.stage-row-name:hover {
   background: #ff453a;
 }
 
+/* ----- Title cards, placeholders and readable copies ----- */
+
+/* Each site's colour; a logo is its mark (a mask) filled with it. */
+[data-platform] {
+  --brand: var(--muted);
+  --brand-fill: var(--brand);
+}
+
+[data-platform="instagram"] {
+  --brand: #d62976;
+  --brand-fill: linear-gradient(45deg, #feda75, #fa7e1e 25%, #d62976 50%, #962fbf 75%, #4f5bd5);
+}
+
+[data-platform="youtube"] {
+  --brand: #ff0000;
+}
+
+[data-platform="reddit"] {
+  --brand: #ff4500;
+}
+
+.logo {
+  display: inline-block;
+  flex-shrink: 0;
+  width: 1em;
+  height: 1em;
+  background: var(--brand-fill);
+  -webkit-mask: url("/logos/link.svg") center / contain no-repeat;
+  mask: url("/logos/link.svg") center / contain no-repeat;
+}
+
+.logo[data-platform="instagram"] {
+  -webkit-mask-image: url("/logos/instagram.svg");
+  mask-image: url("/logos/instagram.svg");
+}
+
+.logo[data-platform="youtube"] {
+  -webkit-mask-image: url("/logos/youtube.svg");
+  mask-image: url("/logos/youtube.svg");
+}
+
+.logo[data-platform="reddit"] {
+  -webkit-mask-image: url("/logos/reddit.svg");
+  mask-image: url("/logos/reddit.svg");
+}
+
+/* A face fills its tile; sizes follow its own width, so it reads the same in the grid, the
+   player and the dialog before Sync. */
+.face {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  container-type: inline-size;
+  color: var(--text);
+  text-align: left;
+}
+
+.face-body {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* A page: its title, large, with the site underneath. */
+.title-card .face-body {
+  justify-content: space-between;
+  padding: 11cqi 10cqi 9cqi;
+}
+
+.title-card {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--brand) 10%, transparent), transparent 55%),
+    var(--grouped);
+}
+
+.face-title {
+  display: -webkit-box;
+  overflow: hidden;
+  font-family: var(--font-display);
+  font-size: clamp(0.8125rem, 12.5cqi, 2.5rem);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.16;
+  overflow-wrap: anywhere;
+  -webkit-line-clamp: 7;
+  -webkit-box-orient: vertical;
+}
+
+.face-site {
+  display: flex;
+  align-items: center;
+  gap: 0.4em;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: clamp(0.625rem, 7cqi, 1rem);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.face-domain {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* A link Sync has yet to fetch: its site's logo over the caption, on the site's tint. */
+.placeholder {
+  background: color-mix(in srgb, var(--brand) 13%, var(--grouped));
+  text-align: center;
+}
+
+.placeholder .face-body {
+  align-items: center;
+  justify-content: center;
+  gap: 10cqi;
+  padding: 12cqi;
+}
+
+.face-logo {
+  width: 34cqi;
+  height: 34cqi;
+  opacity: 0.9;
+}
+
+.face-name {
+  display: -webkit-box;
+  overflow: hidden;
+  font-size: clamp(0.6875rem, 8.5cqi, 1.75rem);
+  font-weight: 600;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+  -webkit-line-clamp: 5;
+  -webkit-box-orient: vertical;
+}
+
+.face .badges {
+  top: 6px;
+  right: 6px;
+}
+
+.deleted-tile:has(input:checked) .face {
+  opacity: 0.55;
+}
+
+/* In the player: a face as large as a 9:16 item would be. */
+.slot > .slot-face {
+  position: relative;
+  inset: auto;
+  width: min(100cqw, 100cqh * var(--ratio));
+  height: min(100cqh, 100cqw / var(--ratio));
+}
+
+.player-sheet.is-page .player-media {
+  background: var(--surface);
+}
+
+/* The readable copy fills the media area and scrolls; the stage's own gestures stop at it
+   (touch-action applies up to the nearest scroller), so the browser scrolls it natively. */
+.reader-pane {
+  position: absolute;
+  inset: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.reader {
+  max-width: 40rem;
+  margin: 0 auto;
+  padding: 56px 32px 72px;
+  font-size: 1.0625rem;
+  line-height: 1.62;
+  overflow-wrap: break-word;
+}
+
+.reader-kicker {
+  margin: 0 0 6px;
+  color: var(--muted);
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.reader h1 {
+  margin: 0 0 24px;
+  font-family: var(--font-display);
+  font-size: clamp(1.5rem, 1.1rem + 1.6vw, 2.125rem);
+  font-weight: 700;
+  letter-spacing: -0.022em;
+  line-height: 1.15;
+}
+
+.reader h2,
+.reader h3,
+.reader h4 {
+  margin: 1.6em 0 0.5em;
+  font-family: var(--font-display);
+  letter-spacing: -0.012em;
+  line-height: 1.25;
+}
+
+.reader p,
+.reader ul,
+.reader ol,
+.reader figure,
+.reader blockquote,
+.reader pre,
+.reader table {
+  margin: 0 0 1em;
+}
+
+.reader img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 1.25em auto;
+  border-radius: var(--radius-sm);
+}
+
+.reader figure img {
+  margin: 0 auto;
+}
+
+.reader figcaption {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 0.8125rem;
+  text-align: center;
+}
+
+.reader a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.reader a:hover {
+  text-decoration: underline;
+}
+
+.reader blockquote {
+  padding-left: 16px;
+  border-left: 3px solid var(--separator);
+  color: var(--muted);
+}
+
+.reader code,
+.reader pre {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.875em;
+}
+
+.reader pre {
+  overflow-x: auto;
+  padding: 12px 14px;
+  border-radius: var(--radius-sm);
+  background: var(--fill);
+  line-height: 1.45;
+}
+
+.reader :not(pre) > code {
+  padding: 0.1em 0.3em;
+  border-radius: 4px;
+  background: var(--fill);
+}
+
+.reader table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+
+.reader th,
+.reader td {
+  padding: 6px 10px;
+  border: 1px solid var(--separator);
+  text-align: left;
+}
+
+.reader hr {
+  margin: 2em 0;
+  border: 0;
+  border-top: 1px solid var(--separator);
+}
+
+.reader-lead img {
+  border-radius: var(--radius);
+}
+
+.reader-link {
+  overflow-wrap: anywhere;
+}
+
+.reader-note {
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--fill);
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+/* An account: picture, names and numbers, centred like a profile. */
+.reader-profile .reader-head {
+  margin-bottom: 20px;
+  text-align: center;
+}
+
+.reader-profile .reader-head h1 {
+  margin-bottom: 4px;
+}
+
+.reader-avatar {
+  width: 112px;
+  height: 112px;
+  object-fit: cover;
+  border-radius: 50% !important;
+  margin: 0 auto 16px !important;
+}
+
+.reader-facts {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 0.875rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.reader-list ol {
+  padding-left: 1.5em;
+}
+
+.reader-list li {
+  margin-bottom: 0.35em;
+}
+
+.reader-list small {
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.reader-comments {
+  margin-top: 40px;
+  padding-top: 8px;
+  border-top: 1px solid var(--separator);
+  font-size: 0.9375rem;
+  line-height: 1.5;
+}
+
+.reader-comments h2 {
+  margin-top: 16px;
+  font-size: 1.125rem;
+}
+
+.reader-comment {
+  margin-top: 16px;
+}
+
+.reader-comment p {
+  margin-bottom: 0.5em;
+}
+
+.reader-comment-meta {
+  margin: 0 0 2px !important;
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.reader-replies {
+  margin-left: 2px;
+  padding-left: 14px;
+  border-left: 2px solid var(--separator);
+}
+
+/* In the side panel: the readable copy of a post with media of its own (a Reddit video). */
+.player-page {
+  margin-top: 20px;
+  padding-top: 4px;
+  border-top: 1px solid var(--separator);
+}
+
+.player-page .reader {
+  max-width: none;
+  padding: 12px 0 0;
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+
+.player-page .reader-head h1 {
+  display: none; /* the panel's title already says it */
+}
+
+/* Why a placeholder waits, and whether cookies.txt could help. */
+.player-status {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--fill);
+  font-size: 0.8125rem;
+  overflow-wrap: anywhere;
+}
+
+.player-status.warn {
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  color: var(--warn);
+}
+
+.player-status.danger {
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  color: var(--danger);
+}
+
+.player-cookies {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 14px;
+  color: var(--muted);
+  font-size: 0.8125rem;
+}
+
+.player-cookies::before {
+  content: "";
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--faint);
+}
+
+.player-cookies.present::before {
+  background: var(--ok);
+}
+
+.player-cookies.expired::before {
+  background: var(--warn);
+}
+
 /* ----- Phone ----- */
+
+@media (max-width: 760px) {
+  .player-sheet.is-page .player-nav {
+    display: none; /* swiping pages; the arrows would sit on the text */
+  }
+
+  .player-sheet.is-page .player-grabber {
+    background: var(--fill-strong);
+  }
+
+  .player-sheet.is-page .player-info {
+    border-top: 1px solid var(--separator); /* the page above and the panel are one colour */
+  }
+
+  .reader {
+    padding: 48px 20px 56px;
+    font-size: 1rem;
+  }
+}
 
 @media (max-width: 760px) {
   .topbar {

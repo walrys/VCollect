@@ -6,7 +6,7 @@ from app.notion.pull import pull
 from app.pipeline.errors import PostFailed, TryLater
 from app.pipeline.post import Pipeline
 from tests.fakes.notion import FULL_SCHEMA, PROPS, FakeNotion
-from tests.fakes.services import fake_services
+from tests.fakes.services import fake_services, page
 
 
 @pytest.fixture
@@ -175,15 +175,94 @@ def test_a_gone_post_is_marked_failed_in_notion(notion, conn, tmp_path, samples)
     assert not (tmp_path / "data" / "media" / str(post_id)).exists()
 
 
-def test_a_profile_link_fails_without_downloading(notion, conn, tmp_path, samples):
+def test_a_page_goes_all_the_way_to_done(notion, conn, tmp_path, samples):
     services = fake_services([samples["portrait.mp4"]])
+    services.downloader.pages["indiegamejoe"] = page(
+        "Joe (@indiegamejoe)",
+        html='<article class="reader"><img src="{1}"><p>Marketing for indie games.</p></article>',
+        text="Joe (@indiegamejoe)\nMarketing for indie games.",
+        images=[samples["photo.png"]],
+    )
     pipeline = make_pipeline(notion, tmp_path, services)
-    page, post_id = add_post(notion, conn, url="https://www.instagram.com/indiegamejoe")
+    page_id, post_id = add_post(notion, conn, url="https://www.instagram.com/indiegamejoe")
 
-    with pytest.raises(PostFailed, match="Not a single post"):
-        process(pipeline, conn, post_id)
-    assert notion.row(page)["status"] == "Failed"
-    assert services.downloader.calls == []
+    steps = process(pipeline, conn, post_id)
+
+    assert steps == [
+        "downloading",
+        "saving the page",
+        "transcribing",
+        "summarising",
+        "saving to Notion",
+    ]
+    assert services.downloader.calls == ["https://www.instagram.com/indiegamejoe/"]
+    assert notion.row(page_id)["status"] == "Done"
+    saved = post(conn, post_id)
+    assert (saved["kind"], saved["thumb_file"], saved["transcript"]) == ("page", None, "")
+    assert saved["page_text"] == "Joe (@indiegamejoe)\nMarketing for indie games."
+    assert items(conn, post_id) == []
+    html = (tmp_path / "data" / "media" / saved["page_file"]).read_text()
+    assert f'<img src="/media/{post_id}/page-01.webp">' in html
+    assert (tmp_path / "data" / "media" / str(post_id) / "page-01.webp").exists()
+    assert services.summariser.contexts[0].page_text == saved["page_text"]
+    assert services.summariser.contexts[0].images == []
+
+
+def test_a_page_image_ffmpeg_cannot_read_is_left_out(notion, conn, tmp_path, samples):
+    broken = tmp_path / "broken.png"
+    broken.write_bytes(b"not a picture")
+    services = fake_services([])
+    services.downloader.pages["example.com"] = page(
+        "Notes",
+        html='<p>Words</p><img src="{1}"><img src="{2}">',
+        text="Notes\nWords",
+        images=[broken, samples["photo.png"]],
+    )
+    pipeline = make_pipeline(notion, tmp_path, services)
+    _, post_id = add_post(notion, conn, url="https://example.com/notes")
+
+    process(pipeline, conn, post_id)
+
+    html = (tmp_path / "data" / "media" / post(conn, post_id)["page_file"]).read_text()
+    assert html == f'<p>Words</p><img src="/media/{post_id}/page-02.webp">'
+
+
+def test_a_page_with_media_is_a_media_post(notion, conn, tmp_path, samples):
+    services = fake_services([])
+    services.downloader.pages["reddit.com"] = page(
+        "A clip",
+        html="<p>The comments</p>",
+        text="A clip\nThe comments",
+        media=[samples["small.mp4"]],
+    )
+    pipeline = make_pipeline(notion, tmp_path, services)
+    _, post_id = add_post(notion, conn, url="https://www.reddit.com/comments/abc/")
+
+    process(pipeline, conn, post_id)
+
+    saved = post(conn, post_id)
+    assert (saved["kind"], saved["thumb_file"]) == ("media", f"{post_id}/thumb.webp")
+    assert saved["page_file"] == f"{post_id}/page.html"
+    assert [i["kind"] for i in items(conn, post_id)] == ["video"]
+
+
+def test_a_resolved_share_link_can_be_a_duplicate(notion, conn, tmp_path, samples):
+    services = fake_services([samples["small.mp4"]])
+    services.downloader.pages["/s/"] = page(
+        "A post",
+        html="<p>Text</p>",
+        text="A post\nText",
+        url="https://www.reddit.com/comments/abc/",
+    )
+    pipeline = make_pipeline(notion, tmp_path, services)
+    first_page, first = add_post(notion, conn, url="https://redd.it/abc")
+    process(pipeline, conn, first)
+    second_page, second = add_post(notion, conn, url="https://www.reddit.com/r/x/s/Shared1")
+
+    with pytest.raises(PostFailed, match="Duplicate of https://app.notion.com/p/page-1"):
+        process(pipeline, conn, second)
+    assert post(conn, second)["normalized_url"] == "https://www.reddit.com/comments/abc/"
+    assert notion.row(second_page)["status"] == "Failed"
 
 
 def test_the_later_copy_of_a_link_is_the_duplicate(notion, conn, tmp_path, samples):

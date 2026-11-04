@@ -7,9 +7,12 @@ from dataclasses import dataclass
 from fastapi.testclient import TestClient
 
 from app.main import create_app
+from app.pipeline.errors import PostFailed
 from app.pipeline.post import Services
 from tests.fakes.notion import FULL_SCHEMA, FakeNotion
 from tests.fakes.services import fake_services
+
+PRIVATE = "Could not download: This account is private"
 
 
 def wait_for_sync(client: TestClient, timeout: float = 30) -> dict:
@@ -30,8 +33,10 @@ class SyncedApp:
     pages: dict[str, str]  # caption -> Notion page id
 
     def post(self, caption: str) -> dict:
-        posts = self.client.get("/api/posts").json()["posts"]
-        return next(post for post in posts if post["caption"] == caption)
+        return next(post for post in self.posts() if post["caption"] == caption)
+
+    def posts(self) -> list[dict]:
+        return self.client.get("/api/posts").json()["posts"]
 
     def search(self, text: str) -> list[int]:
         return self.client.get("/api/search", params={"q": text}).json()["ids"]
@@ -39,7 +44,8 @@ class SyncedApp:
 
 @contextmanager
 def synced_app(settings, samples, schema: dict = FULL_SCHEMA):
-    """An app after one Sync of three rows: two posts that work and a profile link that fails."""
+    """An app after one Sync of three rows: two posts that work and a private profile, which
+    fails and stays in the gallery as a placeholder."""
     notion = FakeNotion(schema)
     pages = {
         "pasta trick": notion.add_row(
@@ -49,6 +55,7 @@ def synced_app(settings, samples, schema: dict = FULL_SCHEMA):
         "synth patch": notion.add_row(url="https://youtu.be/dvUGDMxl8OU", caption="synth patch"),
     }
     services = fake_services([samples["small.mp4"]])
+    services.downloader.errors["indiegamejoe"] = PostFailed(PRIVATE)
     with TestClient(create_app(settings, notion=notion, services=services)) as client:
         client.post("/api/sync")
         wait_for_sync(client)

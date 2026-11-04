@@ -1,11 +1,13 @@
 // The pop-up player: one post, its items, and the filtered posts either side of it.
 // Left/right (arrows, swipe or the side buttons) step through a post's items, then on
-// into the neighbouring post. Edit and Delete act on the post shown.
+// into the neighbouring post. Edit and Delete act on the post shown. A page shows its
+// readable copy, scrolling; a placeholder shows why it waits, with Retry.
 // It grows out of the tile that opened it and shrinks back into the tile of the post it
 // closes on. On a touch screen the media follows the finger: sideways to page, down to close,
 // and anything in motion can be caught and thrown again.
 
 import { renderEditor } from "./editor.js";
+import { faceFor, hostname, openLabel, STATUS } from "./faces.js";
 import { project, reducedMotion, rubberband, Spring, VelocityTracker } from "./spring.js";
 import { tagChip, tagKey } from "./tags.js";
 import { errorText, toast } from "./toast.js";
@@ -49,6 +51,10 @@ let morph = null; // how the open sheet maps onto the tile, from measure()
 let closing = false;
 let sliding = 0; // the direction of a slide still under way
 let pushed = false; // a history entry stands for the open player, so Back closes it
+const pageCache = new Map(); // readable copies fetched while the player is open: url -> html
+
+// A post shows at least one thing: a page or a placeholder has no items of its own.
+const count = (post) => Math.max(1, post.items.length);
 
 // Leaving the player's history entry would otherwise put the page back where it was when the
 // player opened, undoing the scroll that brings the closing post's tile into view.
@@ -162,10 +168,10 @@ function render() {
 // last item of the neighbouring post. Null at either end.
 function neighbour(delta) {
   const item = itemIndex + delta;
-  if (item >= 0 && item < posts[postIndex].items.length) return { postIndex, itemIndex: item };
+  if (item >= 0 && item < count(posts[postIndex])) return { postIndex, itemIndex: item };
   const next = postIndex + delta;
   if (next < 0 || next >= posts.length) return null;
-  return { postIndex: next, itemIndex: delta > 0 ? 0 : posts[next].items.length - 1 };
+  return { postIndex: next, itemIndex: delta > 0 ? 0 : count(posts[next]) - 1 };
 }
 
 // Moves to the neighbour at once.
@@ -230,6 +236,7 @@ function showMedia() {
   el("player-next").disabled = !neighbour(1);
   el("player-count").textContent =
     post.items.length > 1 ? `${itemIndex + 1} / ${post.items.length}` : "";
+  sheet.classList.toggle("is-page", post.kind !== "media");
 }
 
 function slot(at, offset) {
@@ -240,8 +247,16 @@ function slot(at, offset) {
   return box;
 }
 
-// The playing video or image for the item shown; a still for the ones either side.
+// The playing video or image for the item shown; a still for the ones either side. A page
+// shows its readable copy (its title card either side), a placeholder its logo and caption.
 function media(post, index, live) {
+  if (post.kind === "page" && live) return readerPane(post);
+  const face = post.items.length ? null : faceFor(post);
+  if (face) {
+    face.classList.add("slot-face");
+    face.style.setProperty("--ratio", 9 / 16);
+    return face;
+  }
   const item = post.items[index];
   let node;
   if (item.kind === "video" && live) {
@@ -260,12 +275,70 @@ function media(post, index, live) {
   return node;
 }
 
+// The readable copy, scrolling in the media area; a note when the page had nothing to read.
+function readerPane(post) {
+  const pane = document.createElement("div");
+  pane.className = "reader-pane";
+  if (!post.page) {
+    pane.append(noCopy(post, "No readable copy: this page shows nothing without JavaScript."));
+    return pane;
+  }
+  loadPage(post).then((html) => {
+    if (html === null) pane.replaceChildren(noCopy(post, "The readable copy could not be loaded."));
+    else pane.innerHTML = html; // sanitised on the server when it was saved
+  });
+  return pane;
+}
+
+async function loadPage(post) {
+  if (pageCache.has(post.page)) return pageCache.get(post.page);
+  try {
+    const response = await fetch(post.page);
+    if (!response.ok) return null;
+    const { html } = await response.json();
+    pageCache.set(post.page, html);
+    return html;
+  } catch {
+    return null;
+  }
+}
+
+function noCopy(post, note) {
+  const article = document.createElement("article");
+  article.className = "reader";
+  const kicker = document.createElement("p");
+  kicker.className = "reader-kicker";
+  kicker.textContent = hostname(post.url);
+  const title = document.createElement("h1");
+  title.textContent = post.title || post.caption || hostname(post.url);
+  article.append(kicker, title);
+  if (post.description) {
+    const description = document.createElement("p");
+    description.textContent = post.description;
+    article.append(description);
+  }
+  const notice = document.createElement("p");
+  notice.className = "reader-note";
+  notice.textContent = note;
+  const open = document.createElement("a");
+  open.className = "button";
+  open.href = post.url;
+  open.target = "_blank";
+  open.rel = "noopener";
+  open.textContent = `${openLabel(post.platform)} ↗`;
+  article.append(notice, open);
+  return article;
+}
+
 function showInfo() {
   const post = posts[postIndex];
+  const waiting = post.kind === "placeholder";
   el("player-view").hidden = editing;
   el("player-editor").hidden = !editing;
   if (editing) {
     renderEditor(el("player-editor"), post, {
+      // Nothing is fetched yet, so there is no summary or AI tag to edit.
+      placeholder: waiting,
       knownTags: handlers.knownTags(),
       onSave: save,
       onCancel: () => {
@@ -276,11 +349,25 @@ function showInfo() {
     return;
   }
 
-  el("player-title").textContent = post.title || post.caption || hostname(post.url);
+  el("player-title").textContent =
+    post.title || post.caption || hostname(post.url) || "Saved link";
   const saved = new Date(post.saved_at).toLocaleDateString(undefined, { dateStyle: "medium" });
   el("player-meta").textContent = [post.uploader, `Saved ${saved}`].filter(Boolean).join(" · ");
   el("player-summary").textContent = post.summary || "Summary on its way.";
   el("player-summary").classList.toggle("pending", !post.summary);
+  el("player-summary").hidden = waiting;
+
+  const status = waiting && STATUS[post.status];
+  el("player-status").hidden = !status;
+  if (status) {
+    const label = document.createElement("strong");
+    label.textContent = `${status.badge}. `;
+    el("player-status").replaceChildren(label, post.reason || status.note);
+    el("player-status").className = `player-status ${status.tone}`.trim();
+  }
+  el("player-retry").hidden = !waiting || post.state !== "synced";
+  showCookies(post);
+  showInlinePage(post);
   // The caption is the user's own note; skip it when it is already the title.
   const caption = post.caption && post.caption !== el("player-title").textContent;
   el("player-caption").textContent = caption ? post.caption : "";
@@ -306,10 +393,95 @@ function showInfo() {
   el("player-state").hidden = !STATE_NOTES[post.state];
   el("player-readd").hidden = post.state !== "local_only";
   el("player-original").href = post.url;
+  el("player-original").hidden = !post.url;
+  el("player-original-label").textContent = openLabel(post.platform);
   el("player-notion").href = post.notion_url;
   el("player-notion").hidden = !post.notion_url;
   sheet.querySelector(".player-info").scrollTop = 0;
 }
+
+// Whether cookies.txt has a session for the site, read from the file: the site is not asked.
+async function showCookies(post) {
+  const line = el("player-cookies");
+  line.hidden = true;
+  if (post.kind !== "placeholder" || !post.url) return;
+  let answer;
+  try {
+    const response = await fetch(`/api/posts/${post.id}/cookies`);
+    if (!response.ok) return;
+    answer = await response.json();
+  } catch {
+    return;
+  }
+  if (posts[postIndex]?.id !== post.id) return; // moved on meanwhile
+  const { domain, state, expires } = answer;
+  const day = (iso) => new Date(iso).toLocaleDateString(undefined, { day: "numeric", month: "short" });
+  line.textContent = {
+    present: `${domain} cookies present${expires ? `, until ${day(expires)}` : ""}`,
+    expired: `${domain} cookies expired${expires ? ` ${day(expires)}` : ""}`,
+    missing: `No ${domain} cookies in cookies.txt`,
+  }[state];
+  line.className = `player-cookies ${state}`;
+  line.hidden = false;
+}
+
+// A post with media and a page too (a Reddit video and its comments) shows the page here.
+function showInlinePage(post) {
+  const box = el("player-page");
+  box.replaceChildren();
+  box.hidden = !(post.kind === "media" && post.page);
+  if (box.hidden) return;
+  loadPage(post).then((html) => {
+    if (html !== null && posts[postIndex]?.id === post.id) box.innerHTML = html;
+  });
+}
+
+// Processes the row at once, as the Processing page's Retry does; the header shows progress,
+// and the post updates here when it lands.
+async function retry() {
+  const button = el("player-retry");
+  const post = posts[postIndex];
+  button.disabled = true;
+  try {
+    const response = await fetch("/api/processing/retry", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids: [post.id], now: true }),
+    });
+    if (!response.ok) {
+      toast(await errorText(response), "error");
+      return;
+    }
+    const result = await response.json();
+    document.dispatchEvent(new CustomEvent("vcollect:waiting", { detail: result.new }));
+    if (!result.reset.length) {
+      toast("Nothing to retry: it is being processed now, or already done.");
+      return;
+    }
+    toast("Retrying now");
+    document.dispatchEvent(new CustomEvent("vcollect:retrying"));
+  } finally {
+    button.disabled = false;
+  }
+}
+
+// The grid reloaded: swap in the new copies, redrawing the media only when what it shows
+// changed (so a playing video carries on).
+document.addEventListener("vcollect:posts", (event) => {
+  if (!dialog.open || closing || !posts.length) return;
+  const fresh = new Map(event.detail.map((post) => [post.id, post]));
+  const before = posts[postIndex];
+  posts = posts.map((post) => fresh.get(post.id) ?? post);
+  const after = posts[postIndex];
+  if (JSON.stringify(after) === JSON.stringify(before)) return;
+  pageCache.delete(before.page);
+  const shows = (post) => JSON.stringify([post.kind, post.items, post.thumb, post.page, post.title]);
+  if (shows(after) !== shows(before) && !sliding) {
+    itemIndex = Math.min(itemIndex, count(after) - 1);
+    showMedia();
+  }
+  if (!editing) showInfo();
+});
 
 async function save(changes) {
   const post = posts[postIndex];
@@ -376,14 +548,6 @@ async function readd() {
   }
 }
 
-function hostname(url) {
-  try {
-    return new URL(url).hostname.replace(/^www\./, "");
-  } catch {
-    return "Saved post";
-  }
-}
-
 // Touch: the media follows the finger from where it was grabbed. Sideways pages, down closes;
 // on release the flick's speed decides, and the motion carries on at that speed.
 let gesture = null;
@@ -410,6 +574,7 @@ stage.addEventListener("pointerdown", (event) => {
     caught,
     from: null,
     tracker: new VelocityTracker(),
+    pane: target.closest(".reader-pane"), // a page scrolls; it pulls down only from its top
   };
   gesture.tracker.add(event);
 });
@@ -423,6 +588,10 @@ stage.addEventListener("pointermove", (event) => {
     if (Math.hypot(dx, dy) < SLOP_PX) return;
     // The direction is clear: take hold of whatever was moving, where it is now.
     gesture.axis = Math.abs(dx) > Math.abs(dy) ? "x" : "y";
+    if (gesture.axis === "y" && gesture.pane && !(gesture.pane.scrollTop <= 0 && dy > 0)) {
+      gesture = null; // reading: the page scrolls
+      return;
+    }
     Object.assign(gesture, { x: event.clientX, y: event.clientY });
     if (gesture.axis === "x") settlePaging();
     for (const spring of [pager, pullX, pullY]) spring.stop();
@@ -469,6 +638,27 @@ function release(event) {
 stage.addEventListener("pointerup", release);
 stage.addEventListener("pointercancel", release);
 
+// A page at its top pulls down instead of scrolling (the browser would bounce it otherwise);
+// anywhere else, or upwards, it scrolls as usual.
+let pageTouch = null;
+stage.addEventListener(
+  "touchstart",
+  (event) => {
+    const pane = event.target.closest(".reader-pane");
+    pageTouch = pane && pane.scrollTop <= 0 ? event.touches[0].clientY : null;
+  },
+  { passive: true },
+);
+stage.addEventListener(
+  "touchmove",
+  (event) => {
+    if (pageTouch !== null && event.touches[0].clientY > pageTouch && event.cancelable) {
+      event.preventDefault();
+    }
+  },
+  { passive: false },
+);
+
 el("player-prev").addEventListener("click", () => page(-1));
 el("player-next").addEventListener("click", () => page(1));
 el("player-close").addEventListener("click", () => closePlayer());
@@ -479,6 +669,7 @@ el("player-edit").addEventListener("click", () => {
 });
 el("player-delete").addEventListener("click", remove);
 el("player-readd").addEventListener("click", readd);
+el("player-retry").addEventListener("click", retry);
 // Escape closes the same way as the close button, shrinking back into the tile.
 dialog.addEventListener("cancel", (event) => {
   event.preventDefault();
@@ -489,6 +680,7 @@ dialog.addEventListener("close", () => {
   sliding = 0;
   for (const spring of [pager, pullX, pullY, presence]) spring.stop();
   track.replaceChildren(); // stops playback
+  pageCache.clear();
   sheet.style.transform = sheet.style.clipPath = sheet.style.opacity = "";
   if (pushed) {
     pushed = false;
@@ -509,11 +701,26 @@ document.addEventListener(
       event.preventDefault(); // the video would otherwise seek
       page(event.key === "ArrowRight" ? 1 : -1);
     } else if (event.key === " " && !event.target.closest("button, a, video")) {
-      event.preventDefault();
       const video = track.querySelector(".slot.current video");
-      if (video?.paused) video.play();
-      else video?.pause();
+      if (video) {
+        event.preventDefault();
+        if (video.paused) video.play();
+        else video.pause();
+      } else scrollPage(event, event.shiftKey ? -0.9 : 0.9);
+    } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      scrollPage(event, event.key === "ArrowDown" ? 0.12 : -0.12);
+    } else if (event.key === "PageDown" || event.key === "PageUp") {
+      scrollPage(event, event.key === "PageDown" ? 0.9 : -0.9);
     }
   },
   true,
 );
+
+// The keys that scroll a page, while the sheet (not the page) has focus. `share` is of a screen.
+function scrollPage(event, share) {
+  const pane = track.querySelector(".slot.current .reader-pane");
+  if (!pane) return;
+  event.preventDefault();
+  const behavior = reducedMotion.matches ? "auto" : "smooth";
+  pane.scrollBy({ top: pane.clientHeight * share, behavior });
+}

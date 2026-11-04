@@ -58,7 +58,7 @@ def create_app(
             app.state.mirror = mirror
             app.state.syncer = Syncer(pipeline, mirror, settings.db_path, settings.disk_cap_gb)
             background += [
-                asyncio.create_task(_pull_on_launch(mirror)),
+                asyncio.create_task(_pull_on_launch(mirror, settings.db_path)),
                 asyncio.create_task(mirror.auto_pull()),
             ]
 
@@ -81,8 +81,19 @@ def create_app(
         name="media",
     )
     # Mounted last so /api and /media match first.
-    app.mount("/", StaticFiles(directory=WEB_DIR, html=True), name="web")
+    app.mount("/", PageFiles(directory=WEB_DIR, html=True), name="web")
     return app
+
+
+class PageFiles(StaticFiles):
+    """The page's files, which the browser checks for a newer copy on every load (a 304 while
+    unchanged). Without a build step their names never change, so a browser left to guess how
+    long they stay fresh keeps running old code against a newer API."""
+
+    def file_response(self, *args, **kwargs):
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
 
 
 def _real_services(settings: Settings) -> Services:
@@ -93,9 +104,39 @@ def _real_services(settings: Settings) -> Services:
     )
 
 
-async def _pull_on_launch(mirror: Mirror) -> None:
+async def _pull_on_launch(mirror: Mirror, db_path: Path) -> None:
     try:
         await mirror.pull()
     except Exception as error:
         # mirror.error keeps it for /api/health.
         logger.warning("Pull on launch failed: %s", error)
+        return
+    try:
+        await _reset_wrong_kind(mirror, db_path)
+    except Exception as error:
+        logger.warning("Could not reset the rows that failed as the wrong kind of link: %s", error)
+
+
+# What Sync said of links that were not a video or image post, before every link became one.
+WRONG_KIND_ERRORS = (
+    "Not a single post%",
+    "No video in this post%",
+    "Could not download: %Unsupported URL%",
+)
+WRONG_KIND_RESET = "wrong_kind_reset"  # app_settings key: "1" once those rows are reset
+
+
+async def _reset_wrong_kind(mirror: Mirror, db_path: Path) -> None:
+    """Once: sets the rows that failed only for being the wrong kind of link back to Not
+    started, in Notion too, so the next Sync saves them as pages."""
+    with closing(db.connect(db_path)) as conn:
+        if db.setting(conn, WRONG_KIND_RESET) == "1":
+            return
+        failed = conn.execute(
+            "SELECT id FROM posts WHERE status = 'Failed' AND notion_state = 'synced'"
+            " AND (error LIKE ? OR error LIKE ? OR error LIKE ?)",
+            WRONG_KIND_ERRORS,
+        ).fetchall()
+    await mirror.retry([post_id for (post_id,) in failed])
+    with closing(db.connect(db_path)) as conn, conn:
+        db.set_setting(conn, WRONG_KIND_RESET, "1")

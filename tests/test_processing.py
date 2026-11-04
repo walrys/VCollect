@@ -1,4 +1,5 @@
 import asyncio
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -8,7 +9,7 @@ from app.notion import mirror
 from app.pipeline.errors import LoginNeeded, PostFailed
 from tests.fakes.notion import FULL_SCHEMA, FakeNotion
 from tests.fakes.services import fake_services
-from tests.support import wait_for_sync
+from tests.support import PRIVATE, wait_for_sync
 
 LOGIN_WALL = "Instagram needs a login: add its cookies to cookies.txt in the data folder"
 
@@ -33,7 +34,8 @@ def test_processing_lists_every_row_sync_has_not_finished(settings, samples):
     notion.add_row(url="https://www.instagram.com/indiegamejoe")
     notion.add_row(url="https://www.instagram.com/reel/AAA/", caption="behind a wall")
     services = fake_services([samples["small.mp4"]])
-    services.downloader.errors["instagram.com"] = LoginNeeded("Instagram")
+    services.downloader.errors["indiegamejoe"] = PostFailed(PRIVATE)
+    services.downloader.errors["/p/AAA/"] = LoginNeeded("Instagram")
 
     with TestClient(create_app(settings, notion=notion, services=services)) as client:
         progress = sync(client)
@@ -50,7 +52,7 @@ def test_processing_lists_every_row_sync_has_not_finished(settings, samples):
         LOGIN_WALL,
     )
     assert failed["stage"] == "failed"
-    assert failed["reason"].startswith("Not a single post")
+    assert failed["reason"] == PRIVATE
     assert later["tried_at"] and failed["tried_at"]
     assert (result["done"], result["new"]) == (1, 1)
 
@@ -240,6 +242,7 @@ def test_retry_resets_nothing_when_notion_is_down(settings, samples):
     notion = FakeNotion(FULL_SCHEMA)
     page = notion.add_row(url="https://www.instagram.com/indiegamejoe")
     services = fake_services([samples["small.mp4"]])
+    services.downloader.errors["indiegamejoe"] = PostFailed(PRIVATE)
 
     with TestClient(create_app(settings, notion=notion, services=services)) as client:
         sync(client)
@@ -255,3 +258,41 @@ def test_retry_resets_nothing_when_notion_is_down(settings, samples):
 def test_processing_without_notion(client):
     assert client.get("/api/processing").json() == {"rows": [], "done": 0, "new": 0}
     assert client.post("/api/processing/retry", json={"ids": [1]}).status_code == 409
+
+
+def wait_for(condition, timeout: float = 10) -> None:
+    deadline = time.monotonic() + timeout
+    while not condition():
+        if time.monotonic() > deadline:
+            raise AssertionError("timed out")
+        time.sleep(0.05)
+
+
+def test_rows_that_failed_as_the_wrong_kind_of_link_are_reset_once(settings, samples):
+    notion = FakeNotion(FULL_SCHEMA)
+    profile = notion.add_row(
+        url="https://www.instagram.com/indiegamejoe",
+        status="Failed",
+        error="Not a single post: an Instagram profile or page",
+    )
+    page = notion.add_row(
+        url="https://example.com/post",
+        status="Failed",
+        error="Could not download: ERROR: Unsupported URL: https://example.com/post",
+    )
+    private = notion.add_row(
+        url="https://youtu.be/dvUGDMxl8OU", status="Failed", error="Could not download: Private"
+    )
+    services = fake_services([samples["small.mp4"]])
+
+    with TestClient(create_app(settings, notion=notion, services=services)):
+        wait_for(lambda: notion.row(page)["status"] == "Not started")
+        wait_for(lambda: notion.row(profile)["status"] == "Not started")
+    assert (notion.row(private)["status"], notion.row(profile)["error"]) == ("Failed", "")
+
+    # Once only: a later failure of that kind is the user's to retry.
+    notion.edit_row(profile, status="Failed", error="Not a single post: a profile")
+    with TestClient(create_app(settings, notion=notion, services=services)) as client:
+        wait_for(lambda: client.get("/api/health").json()["notion"]["error"] is None)
+        time.sleep(0.3)
+    assert notion.row(profile)["status"] == "Failed"

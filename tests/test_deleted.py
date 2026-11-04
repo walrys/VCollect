@@ -26,7 +26,7 @@ def test_the_choice_deletes_ticked_posts_and_keeps_the_rest(synced, settings):
     ).json()
 
     assert answer == {"deleted": [pasta["id"]], "kept": [synth["id"]]}
-    posts = synced.client.get("/api/posts").json()["posts"]
+    posts = [post for post in synced.posts() if post["caption"]]
     assert [(post["caption"], post["state"], post["notion_url"]) for post in posts] == [
         ("synth patch", "local_only", "")
     ]

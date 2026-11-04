@@ -1,6 +1,8 @@
 """One post through the pipeline. Each step checks for its own output first, so a rerun resumes."""
 
+import dataclasses
 import json
+import re
 import shutil
 import sqlite3
 import tempfile
@@ -17,7 +19,8 @@ from app.config import NotionProps
 from app.notion import values
 from app.notion.client import NotionClient, NotionError
 from app.pipeline import media
-from app.pipeline.download import Download, Downloader
+from app.pipeline.content import Download
+from app.pipeline.download import Downloader
 from app.pipeline.errors import LoginNeeded, PostFailed, TryLater
 from app.pipeline.summarise import PostContext, Summariser
 from app.pipeline.transcribe import Transcriber
@@ -60,10 +63,10 @@ class Pipeline:
         conn: sqlite3.Connection,
         post_id: int,
         on_step: Callable[[str], None],
-        skip_sites: Mapping[str, str] = MappingProxyType({}),
+        skip_sites: Mapping[str, LoginNeeded] = MappingProxyType({}),
     ) -> None:
         """Raises PostFailed once the row is marked Failed, or TryLater to leave it for later.
-        `skip_sites` maps each site the run stopped asking to the reason it stopped."""
+        `skip_sites` maps each site the run stopped asking to the wall it met there."""
         try:
             await self._steps(conn, post_id, on_step, skip_sites)
         except PostFailed as failure:
@@ -74,7 +77,7 @@ class Pipeline:
         post = _post(conn, post_id)
         link = normalise(post["url"])
         if link.site in skip_sites:
-            raise LoginNeeded(link.site, skip_sites[link.site])
+            raise skip_sites[link.site].again()
         _reject_duplicate(conn, post, link)
 
         if not post["media_ready"]:
@@ -110,8 +113,17 @@ class Pipeline:
             download = await self.services.downloader.download(link, work / "raw", skip_sites)
             manifest.write_text(download.to_json())
         download = Download.from_json(manifest.read_text())
+        if download.url and download.url != link.url:
+            # A share link, now resolved: its post may be saved already under its own link.
+            with conn:
+                conn.execute(
+                    "UPDATE posts SET normalized_url = ? WHERE id = ?", (download.url, post_id)
+                )
+            _reject_duplicate(
+                conn, _post(conn, post_id), dataclasses.replace(link, url=download.url)
+            )
 
-        on_step("compressing")
+        on_step("compressing" if download.items else "saving the page")
         await self._store_media(conn, post_id, work / "raw", download)
         shutil.rmtree(work, ignore_errors=True)
 
@@ -129,12 +141,18 @@ class Pipeline:
                 path, info = await media.convert_image(raw / item.file, stem)
             rows.append((post_id, position, item.kind, path, info))
 
-        first_path, first = rows[0][3], rows[0][4]
-        # The platform's own thumbnail suits landscape video; vertical video gets its own frame,
-        # as YouTube's thumbnails for Shorts are often letterboxed.
-        landscape = (first.width or 0) > (first.height or 0)
-        thumb_source = raw / download.thumbnail if download.thumbnail and landscape else first_path
-        await media.make_thumbnail(thumb_source, out / "thumb.webp")
+        thumb_file = None  # a page's tile is its title, drawn by the gallery
+        if rows:
+            first_path, first = rows[0][3], rows[0][4]
+            # The platform's own thumbnail suits landscape video; vertical video gets its own
+            # frame, as YouTube's thumbnails for Shorts are often letterboxed.
+            landscape = (first.width or 0) > (first.height or 0)
+            thumb_source = (
+                raw / download.thumbnail if download.thumbnail and landscape else first_path
+            )
+            await media.make_thumbnail(thumb_source, out / "thumb.webp")
+            thumb_file = f"{post_id}/thumb.webp"
+        page_file = await self._store_page(post_id, raw, out, download)
 
         with conn:
             conn.execute("DELETE FROM items WHERE post_id = ?", (post_id,))
@@ -148,17 +166,39 @@ class Pipeline:
             )
             conn.execute(
                 "UPDATE posts SET title = ?, uploader = ?, platform_caption = ?,"
-                " source_transcript = ?, thumb_file = ?, media_ready = 1 WHERE id = ?",
+                " source_transcript = ?, thumb_file = ?, kind = ?, page_file = ?, page_text = ?,"
+                " media_ready = 1 WHERE id = ?",
                 (
                     download.title,
                     download.uploader,
                     download.caption,
                     download.subtitles,
-                    f"{post_id}/thumb.webp",
+                    thumb_file,
+                    "media" if rows else "page",
+                    page_file,
+                    download.page.text if download.page else "",
                     post_id,
                 ),
             )
             db.reindex_post(conn, post_id)
+
+    async def _store_page(
+        self, post_id: int, raw: Path, out: Path, download: Download
+    ) -> str | None:
+        """Writes the readable copy, its images converted like any other, and returns its
+        file; None when there is no copy to read. An image ffmpeg cannot read is left out."""
+        if download.page is None or not download.page.html:
+            return None
+        html = download.page.html
+        for number, name in enumerate(download.page.images, start=1):
+            try:
+                path, _ = await media.convert_image(raw / name, out / f"page-{number:02}")
+            except PostFailed:
+                html = re.sub(rf'<img[^>]*src="{re.escape(name)}"[^>]*>', "", html)
+                continue
+            html = html.replace(f'src="{name}"', f'src="/media/{post_id}/{path.name}"')
+        (out / "page.html").write_text(html, encoding="utf-8")
+        return f"{post_id}/page.html"
 
     async def _whisper(self, conn, post_id: int) -> str:
         parts = []
@@ -198,6 +238,7 @@ class Pipeline:
                     platform_caption=post["platform_caption"],
                     user_caption=post["user_caption"],
                     transcript=post["transcript"] or "",
+                    page_text=post["page_text"],
                     images=images,
                     vocabulary=vocabulary,
                 )
@@ -240,9 +281,10 @@ class Pipeline:
             conn.execute("DELETE FROM items WHERE post_id = ?", (post_id,))
             conn.execute(
                 "UPDATE posts SET status = 'Failed', error = ?, media_ready = 0, thumb_file = NULL,"
-                " processed_at = ? WHERE id = ?",
+                " kind = 'media', page_file = NULL, page_text = '', processed_at = ? WHERE id = ?",
                 (message, _now(), post_id),
             )
+            db.reindex_post(conn, post_id)
 
     async def _write_notion(self, page_id: str, properties: dict) -> None:
         try:

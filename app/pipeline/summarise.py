@@ -12,6 +12,7 @@ from app.pipeline.errors import TryLater
 
 MAX_TAGS = 5
 MAX_TRANSCRIPT_CHARS = 8000
+MAX_PAGE_CHARS = 12000  # a page's text, the post first and comments after
 CONTEXT_TOKENS = 16384
 
 SYSTEM = (
@@ -49,6 +50,7 @@ class PostContext:
     transcript: str
     images: list[Path]  # video keyframes and post images, already scaled down
     vocabulary: list[str]  # existing AI tags, most used first
+    page_text: str = ""  # the readable copy of a page or Reddit post
 
 
 class Summariser:
@@ -94,12 +96,20 @@ def prompt(post: PostContext) -> str:
         ("Caption from the platform", post.platform_caption),
         ("The saver's own note", post.user_caption),
         ("Transcript", post.transcript[:MAX_TRANSCRIPT_CHARS]),
+        ("Text of the page", _page_text(post)),
     ]:
         if value.strip():
             sections.append(f"{label}:\n{value.strip()}")
     if post.images:
         sections.append(f"{len(post.images)} images from the post are attached.")
     return "\n\n".join(sections)
+
+
+def _page_text(post: PostContext) -> str:
+    """A page without a readable copy has its description as its text: once is enough."""
+    if post.page_text.strip() == post.platform_caption.strip():
+        return ""
+    return post.page_text[:MAX_PAGE_CHARS]
 
 
 def normalise_tags(tags: list) -> list[str]:

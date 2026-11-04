@@ -4,8 +4,21 @@ import re
 import sqlite3
 from pathlib import Path
 
-# The search document for each post: every text a search should find, tags of both kinds included.
+# The search document for each post: every text a search should find, tags of both kinds
+# included, and the words of its link ("reddit", "gamedev").
 SEARCH_ROWS = """
+    INSERT INTO post_search
+        (rowid, title, user_caption, platform_caption, summary, transcript, uploader, tags,
+         page_text, link)
+    SELECT p.id, p.title, p.user_caption, p.platform_caption, p.summary,
+           coalesce(p.transcript, ''), p.uploader,
+           coalesce((SELECT group_concat(t.name, ' ') FROM post_tags pt
+                     JOIN tags t ON t.id = pt.tag_id WHERE pt.post_id = p.id), ''),
+           p.page_text, p.url
+    FROM posts p
+"""
+# The search document as MIGRATIONS[3] first built it: a migration never changes.
+_SEARCH_ROWS_1 = """
     INSERT INTO post_search
         (rowid, title, user_caption, platform_caption, summary, transcript, uploader, tags)
     SELECT p.id, p.title, p.user_caption, p.platform_caption, p.summary,
@@ -88,7 +101,7 @@ MIGRATIONS: list[str] = [
         title, user_caption, platform_caption, summary, transcript, uploader, tags,
         tokenize = 'porter unicode61 remove_diacritics 2'
     );
-    {SEARCH_ROWS};
+    {_SEARCH_ROWS_1};
     """,
     # Gallery edits Notion has not received yet: one row per post and field.
     """
@@ -104,6 +117,26 @@ MIGRATIONS: list[str] = [
     """
     ALTER TABLE posts ADD COLUMN retry_error TEXT NOT NULL DEFAULT '';
     ALTER TABLE posts ADD COLUMN tried_at TEXT;  -- the last Sync to work on the post, UTC
+    """,
+    # Links of every kind become posts: pages (profiles, articles, Reddit posts) get a
+    # readable copy, searched with the rest, and their links are normalised afresh.
+    f"""
+    ALTER TABLE posts ADD COLUMN kind TEXT NOT NULL DEFAULT 'media';  -- media | page: the tile
+    ALTER TABLE posts ADD COLUMN page_file TEXT;  -- the readable copy, relative to DATA_DIR/media
+    ALTER TABLE posts ADD COLUMN page_text TEXT NOT NULL DEFAULT '';
+    -- Whether a session in cookies.txt would solve what keeps the post waiting (retry_error).
+    ALTER TABLE posts ADD COLUMN needs_login INTEGER NOT NULL DEFAULT 0;
+    UPDATE posts SET needs_login = 1
+        WHERE retry_error LIKE '%needs a login%' OR retry_error LIKE '%available to everyone%';
+    UPDATE posts SET normalized_url = NULL WHERE status != 'Done';
+
+    DROP TABLE post_search;
+    CREATE VIRTUAL TABLE post_search USING fts5(
+        title, user_caption, platform_caption, summary, transcript, uploader, tags, page_text,
+        link,
+        tokenize = 'porter unicode61 remove_diacritics 2'
+    );
+    {SEARCH_ROWS};
     """,
 ]
 

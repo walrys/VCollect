@@ -13,6 +13,18 @@ def test_gallery_page_is_served(client):
     assert "VCOLLECT" in response.text
 
 
+def test_page_files_are_checked_for_a_newer_copy_on_every_load(client):
+    # No build step means no versioned file names: without this header a browser keeps
+    # running an old gallery.js against a newer API.
+    for path in ("/", "/gallery.js", "/app.css", "/logos/reddit.svg"):
+        response = client.get(path)
+        assert response.headers["cache-control"] == "no-cache", path
+
+    # The check costs no download while the file is unchanged.
+    etag = client.get("/gallery.js").headers["etag"]
+    assert client.get("/gallery.js", headers={"If-None-Match": etag}).status_code == 304
+
+
 def test_health_reports_unconfigured_and_unreachable(client):
     body = client.get("/api/health").json()
     assert body == {

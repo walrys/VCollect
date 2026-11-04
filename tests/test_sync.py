@@ -2,7 +2,7 @@ from fastapi.testclient import TestClient
 
 from app.main import create_app
 from app.pipeline.download import INSTAGRAM_IMAGES
-from app.pipeline.errors import LoginNeeded
+from app.pipeline.errors import LoginNeeded, PostFailed
 from tests.fakes.notion import FULL_SCHEMA, FakeNotion
 from tests.fakes.services import fake_services
 from tests.support import wait_for_sync
@@ -19,6 +19,7 @@ def test_sync_processes_every_new_row(settings, samples):
     failed = notion.add_row(url="https://www.instagram.com/indiegamejoe")
     notion.add_row(url="https://youtu.be/aaaaaaaaaaa", status="Done")
     services = fake_services([samples["small.mp4"]])
+    services.downloader.errors["indiegamejoe"] = PostFailed("Could not download: private")
 
     with TestClient(create_app(settings, notion=notion, services=services)) as client:
         started = client.post("/api/sync").json()
@@ -34,7 +35,7 @@ def test_sync_processes_every_new_row(settings, samples):
     assert progress["new"] == 0
     assert notion.row(done)["status"] == "Done"
     assert notion.row(failed)["status"] == "Failed"
-    assert any("Not a single post" in problem for problem in progress["problems"])
+    assert any("Could not download: private" in problem for problem in progress["problems"])
 
 
 def test_a_login_wall_skips_the_rest_of_that_site(settings, samples):
@@ -103,3 +104,18 @@ def test_cancel_stops_at_the_next_step(settings, samples):
     assert progress["stopped"] == "Cancelled"
     assert (progress["done"], progress["handled"], progress["new"]) == (0, 0, 2)
     assert len(services.summariser.contexts) == 1
+
+
+def test_a_wall_on_reels_does_not_stop_profiles(settings, samples):
+    notion = FakeNotion(FULL_SCHEMA)
+    notion.add_row(url="https://www.instagram.com/someone")
+    notion.add_row(url="https://www.instagram.com/reel/AAA/")  # newest: processed first
+    services = fake_services([samples["small.mp4"]])
+    services.downloader.errors["/p/AAA/"] = LoginNeeded("Instagram")
+
+    with TestClient(create_app(settings, notion=notion, services=services)) as client:
+        client.post("/api/sync")
+        progress = wait_for_sync(client)
+
+    assert (progress["done"], progress["later"]) == (1, 1)
+    assert services.downloader.calls[-1] == "https://www.instagram.com/someone/"

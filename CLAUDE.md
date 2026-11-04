@@ -2,7 +2,7 @@
 
 ## Overview
 
-A web app that converts a growing database of saved video URLs on Notion into a managed video collection with a web gallery / interface.
+A web app that converts a growing database of saved links on Notion (mostly videos) into a managed collection with a web gallery / interface. Every link is kept, whatever it points to: a page is saved as a readable copy.
 
 
 ## Goals
@@ -11,7 +11,7 @@ A web app that converts a growing database of saved video URLs on Notion into a 
 - Using Notion API, grab data source which contains video urls, captions, tags, created date (date url was saved)
 - Only processing rows that have not been marked as complete,
 For every row:
-1) Download video with all metadata from URL using yt-dlp (instaloader for Instagram carousels that mix videos and images)
+1) Download video with all metadata from URL using yt-dlp (instaloader for Instagram carousels that mix videos and images, and profiles); any other link is saved as a readable copy of its page
 2) Compress video using ffmpeg for local storage
 3) Extract thumbnails from video if the downloader did not grab it
 4) Summarise video transcript (if present) into a AI summarised description
@@ -45,7 +45,8 @@ v1 deliberately leaves out:
 
 - Python 3.12 + FastAPI, SQLite with FTS5, a static HTML page + plain JS (no build step) calling the app's own JSON API.
 - yt-dlp: every link first, Instagram reels included. Self-updates on container start and nightly, since its site extractors break often. Needs Deno (bundled in the image) to solve YouTube's JavaScript challenges.
-- instaloader: Instagram carousels that mix videos and images, which yt-dlp cannot fetch whole. Works without a login, through an Instagram API rate-limited separately from, and far more tightly than, the pages yt-dlp reads. Self-updates with yt-dlp.
+- instaloader: Instagram carousels that mix videos and images, which yt-dlp cannot fetch whole, and profiles. Works without a login, through an Instagram API rate-limited separately from, and far more tightly than, the pages yt-dlp reads. Self-updates with yt-dlp.
+- Pages: curl_cffi (fetches as Chrome would, with `cookies.txt`), trafilatura (Reader View-style extraction and page metadata), nh3 (sanitises the copy).
 - ffmpeg: compression, keyframes, thumbnails.
 - Ollama + `qwen3.5` (vision-capable, multilingual): summaries and AI tags.
 - whisper via speaches (OpenAI-compatible server), model `Systran/faster-whisper-small.en`: transcripts.
@@ -82,31 +83,37 @@ v1 deliberately leaves out:
 - One job at a time, one row at a time (platform rate limits). Server-side, so it survives closing the tab. Every open tab shows the progress bar ("12 / 40 · compressing <title>") with a cancel. Posts join the grid as each finishes.
 - Rows to process: `Status` = Not started. "Sync (N new)" counts only rows no Sync has tried: a row a Sync leaves for later keeps the reason (`retry_error`) and is retried by every Sync, but is no longer new.
 - Per row:
-  1. **Normalise the URL**: strip tracking params (`?igsh=`, `&si=`), rewrite `youtu.be` / `shorts/` to `watch?v=`. A duplicate of an existing post → Failed "Duplicate of <link to first row>". A playlist or channel → Failed "not a single post".
-  2. **Download**: yt-dlp first for every link. On Instagram it takes the single-file MP4 (H.264 + AAC ≤720p, which Compress copies as is) over the separate VP9 streams, and waits 3–8 s per download. When yt-dlp finds an Instagram image post or carousel (`NotASingleVideo`), the page it read already lists every picture at full size, so image-only posts are saved from those URLs without asking Instagram again; a carousel with videos goes to instaloader. Both read `DATA_DIR/cookies.txt`. Keep every item of a carousel, images included. Image-only posts are saved as images. A login wall or rate limit (`LoginNeeded`) skips the rest of that site's posts for the run, and the skipped posts keep its reason. instaloader's is named "Instagram image posts" so it never stops reels or image-only posts; since a post's kind is only known once yt-dlp has read it, the downloader checks that skip itself.
-  3. **Compress**: videos to H.264 + AAC MP4, ≤720p, CRF 26, 96 kbps audio, `+faststart`; skip the re-encode when the source is already H.264 ≤720p and small. Originals are discarded. Images to WebP q80, longest side ≤1440 px, keeping whichever file is smaller. Thumbnails are WebP, extracted from the video when none was downloaded.
+  1. **Normalise the URL** (`urls.py`): strip tracking params (`?igsh=`, `&si=`), rewrite `youtu.be` / `shorts/` to `watch?v=`, every Reddit post link to `/comments/<id>/`, and say what kind of page it is: post, profile (Instagram account, YouTube channel), playlist or page. A duplicate of an existing post → Failed "Duplicate of <link to first row>". A Reddit share link (`/r/<sub>/s/<code>`) names its post only once followed, so the download resolves it and the duplicate check runs again. A row whose link is empty or not a link → Failed.
+  2. **Download**: yt-dlp first for every link. On Instagram it takes the single-file MP4 (H.264 + AAC ≤720p, which Compress copies as is) over the separate VP9 streams, and waits 3–8 s per download. When yt-dlp finds an Instagram image post or carousel (`NotASingleVideo`), the page it read already lists every picture at full size, so image-only posts are saved from those URLs without asking Instagram again; a carousel with videos goes to instaloader. Both read `DATA_DIR/cookies.txt`. Keep every item of a carousel, images included. Image-only posts are saved as images. A login wall or rate limit (`LoginNeeded`) skips the rest of that site's posts for the run, and the skipped posts keep its reason. instaloader's site is "Instagram's API" (Instagram profiles' too), so it never stops reels or image-only posts and a wall on reels never stops profiles; since a post's kind is only known once yt-dlp has read it, the downloader checks that skip itself. An age wall (`PostNeedsLogin`) waits for cookies on that post alone.
+     Links that are not a video post (`download.py` routes them):
+     - **Reddit** (any link; a missing session in `cookies.txt` is a `LoginNeeded` before any request): the post from Reddit's JSON, with its text, images and top 50 comments 3 deep as the readable copy, its video (or the video a link post points at) through yt-dlp. A post without text keeps its images as media; with text they go into the copy.
+     - **Instagram profile**: one instaloader request (`web_profile_info`), saved as a profile card. instaloader runs with `max_connection_attempts=1`: left to itself it sleeps out a 429 for up to half an hour.
+     - **YouTube channel or playlist**: yt-dlp's flat listing, saved as a card with its latest 30 videos.
+     - **Anything else**: yt-dlp first only when it has an extractor for the site (TikTok, X, Vimeo …); when it finds no video there (`NoMedia`, a playlist, a live stream) or knows only the generic extractor, the page is saved (`pages.py`): its readable copy, sanitised, images downloaded. A page with under 200 characters to read (it needs JavaScript) keeps its title and description only, and is Done. A link straight to an image is an image post. The site's answer decides: 404/410 → Failed "gone"; 401/403 or a bot check → Failed "refused the download"; 429, 5xx and network errors → retry next Sync.
+  3. **Compress**: videos to H.264 + AAC MP4, ≤720p, CRF 26, 96 kbps audio, `+faststart`; skip the re-encode when the source is already H.264 ≤720p and small. Originals are discarded. Images to WebP q80, longest side ≤1440 px, keeping whichever file is smaller; a readable copy's images too (one ffmpeg cannot read is left out), the copy itself in `media/<id>/page.html`. Thumbnails are WebP, extracted from the video when none was downloaded; a page has none.
   4. **Transcript**: YouTube captions when present, else whisper. YouTube rate-limits caption downloads (HTTP 429) on their own, so a caption failure retries the download without them. A missing transcript is never a failure. speaches answers HTTP 500 for audio over 30 s with no speech in it (music only), so a 500 counts as no speech; an unreachable whisper is still retried next Sync.
-  5. **Summarise**: one Ollama call per post returns JSON `{summary, ai_tags}`: a 2–3 sentence English summary and 3–5 AI tags (lowercase, singular). Input: transcript, user caption, platform caption, every image of an image post, and `KEYFRAMES` (default 4, 0 disables) frames per video. The prompt carries the existing AI-tag vocabulary so tags get reused.
+  5. **Summarise**: one Ollama call per post returns JSON `{summary, ai_tags}`: a 2–3 sentence English summary and 3–5 AI tags (lowercase, singular). Input: transcript, user caption, platform caption, the readable copy's text (12,000 characters, post before comments), every image of an image post, and `KEYFRAMES` (default 4, 0 disables) frames per video. The prompt carries the existing AI-tag vocabulary so tags get reused.
   6. **Finish**: write `Summary`, `AI Tags`, and `Status` = Done to Notion.
 - Failure rules:
   - Every step is idempotent: a finished step's output is reused, never redone.
   - Done only when every step succeeds.
-  - Transient errors (network, rate limit, Ollama or whisper down) leave the row Not started for the next Sync.
+  - Transient errors (network, rate limit, Ollama or whisper down) leave the row Not started for the next Sync. `posts.needs_login` marks the ones a session in `cookies.txt` would solve.
   - Permanent errors (removed, private, unsupported) → Failed with the reason in `Error`. Failed rows stay skipped until retried on the Processing page (which sets `Status` back to Not started in Notion, and with a row's Retry processes it at once) or reset in Notion.
-  - A post appears in the gallery once its media and thumbnail are ready; its summary can follow later.
+  - Every row is in the gallery from its first pull: a placeholder until its media (or page) is ready; its summary can follow later.
+  - Rows that failed only as the wrong kind of link, before every link became a post, were reset once at launch (`wrong_kind_reset` in `app_settings`).
 - `MAX_DURATION_MIN` (off by default): longer videos → Failed "too long".
 - Disk cap 100 GB: the menu shows usage; Sync refuses new downloads above 95 GB and deletes nothing on its own.
 
 ### JSON API
-The web page talks to the server only through the JSON API (`/api/posts`, `/api/tags`, `/api/sync`, …), so a future iOS app reuses it unchanged. Media is served with HTTP range requests (seeking, iOS AVPlayer).
+The web page talks to the server only through the JSON API (`/api/posts`, `/api/tags`, `/api/sync`, …), so a future iOS app reuses it unchanged. Media is served with HTTP range requests (seeking, iOS AVPlayer). Each post carries its `kind` (media, page, placeholder), `status` (done, new, login, waiting, failed) and `reason`; `/api/posts/{id}/page` returns the readable copy and `/api/posts/{id}/cookies` whether `cookies.txt` has the site's cookies (missing, expired, present), read from the file without asking the site.
 
 ### Gallery details
 - **Header**: stays on screen as a translucent bar holding the wordmark, the search bar, a **+** button whose panel adds a URL by creating a Notion row (warns on duplicates), and the menu. `/` focuses search.
-- **Search**: server-side, debounced, keyword FTS5 with prefix matching over title, user caption, platform caption, summary, transcript, uploader, AI tags. Results keep timeline order and combine with selected tags as AND.
+- **Search**: server-side, debounced, keyword FTS5 with prefix matching over title, user caption, platform caption, summary, transcript, uploader, both kinds of tags, the readable copy and the words of the link ("reddit", "gamedev"). Results keep timeline order and combine with selected tags as AND.
 - **Tag bar**: Notion tags as filled chips; AI tags in a second row as outlined chips. Top ~20 plus "show all"; on a phone each row is one line that scrolls sideways. Filtering is instant (client-side) and AND across tags. Once tags are selected, the bar shows only tags present in the current results, with counts, and a "12 of 162 posts · Clear" line appears.
-- **Grid**: one 9:16 tile per post (landscape centre-cropped), ordered by saved date, static thumbnails, a "1/5" badge on carousels and an icon on image posts.
+- **Grid**: one 9:16 tile per post (landscape centre-cropped), ordered by saved date, static thumbnails, a "1/5" badge on carousels and an icon on image posts. A page gets a **title card**: its title, large, over the site's logo and domain. A **placeholder** shows the site's logo over the user's caption on the site's tint, with a badge: New, Needs login, Waiting or Failed. Both are drawn in the browser (`faces.js`, logos in `web/logos/`: Simple Icons, CC0), so they follow the theme.
 - **Group by date**: buckets are exclusive, first match wins: Today, Yesterday, This Week (weeks start Monday), Last Week, then one heading per month ("October 2026"). Empty groups are hidden. Grouping runs in the browser, in its local time. The checkbox state is remembered per browser.
-- **Pop-up player**: plays local media. It grows out of the tapped tile and shrinks back into the tile of the post it closes on. Swipe (the media follows the finger) or arrow keys move through a post's items and through the filtered posts; pull down, Escape or Back closes it. Motion uses springs and falls back to cross-fades under reduced motion. Edits Notion tags, caption, summary, AI tags; promotes an AI tag to a Notion tag; deletes; links to the original.
+- **Pop-up player**: plays local media. It grows out of the tapped tile and shrinks back into the tile of the post it closes on. Swipe (the media follows the finger) or arrow keys move through a post's items and through the filtered posts; pull down, Escape or Back closes it. Motion uses springs and falls back to cross-fades under reduced motion. Edits Notion tags, caption, summary, AI tags; promotes an AI tag to a Notion tag; deletes; links to the original ("Open on Reddit"). A page's readable copy fills the media area and scrolls (the browser scrolls it natively; at its top, pulling down closes); a post with media and a copy (a Reddit video) shows the copy in the side panel. A placeholder shows why it waits, the cookie line, and Retry (as on the Processing page); it updates in place when the post lands.
 - **Processing page** (`#processing`, linked from the ☰ panel and the last-Sync report): every row Sync has not finished, newest saved first, in three groups: Failed (Notion's `Error`, with Retry and Retry all), To retry (why the last Sync left it, with Retry) and New. It shares the header, so Sync and the progress bar stay in reach, and refreshes as a Sync works through rows.
 - **Menu**: the Sync button (or progress bar), then a ☰ panel with the Processing link, group-by-date, the auto-pull toggle and disk usage against `DISK_CAP_GB`.
 - Responsive for phone browsers over Tailscale; follows the system dark/light theme.
@@ -121,17 +128,20 @@ app/                     FastAPI package
                          rows, retry), settings (auto-pull, disk usage); /media serves DATA_DIR/media
   db/                    SQLite connection, append-only MIGRATIONS, tag and search helpers
   web/                   static page, ES modules, no build: app.js (Sync, Add link, services), gallery.js
-                         (grid, tag bar, search, date groups), player.js, editor.js (edit mode),
+                         (grid, tag bar, search, date groups), faces.js (title cards, placeholders),
+                         logos/, player.js, editor.js (edit mode),
                          menu.js (☰ panel), deleted.js (deleted-in-Notion dialog),
                          processing.js (#processing page), tags.js, toast.js, spring.js (springs and
                          gesture helpers for the player's motion), app.css
   notion/                client, schema check, pull; mirror.py runs every Notion conversation
                          (pull, push, create, trash) under one lock
-  pipeline/              Sync: urls, download, media (ffmpeg), transcribe, summarise; post.py runs
-                         one post's steps, runner.py the background job; errors.py decides
-                         Failed (PostFailed) vs retry next Sync (TryLater)
-tests/                   pytest; fakes/ holds FakeNotion, fake downloader/whisper/Ollama, and
-                         sample media that ffmpeg generates per test session
+  pipeline/              Sync: urls, download (routes every link), pages (readable copies), reddit,
+                         web (browser-like HTTP, cookie status), content (what a download brings back),
+                         media (ffmpeg), transcribe, summarise; post.py runs one post's steps,
+                         runner.py the background job; errors.py decides Failed (PostFailed) vs
+                         retry next Sync (TryLater)
+tests/                   pytest; fakes/ holds FakeNotion, fake downloader/whisper/Ollama, FakeWeb
+                         (canned pages), and sample media that ffmpeg generates per test session
 docker/entrypoint.sh     refreshes yt-dlp and instaloader on every server start
 docker-compose*.yml      base stack, dev override, GPU override
 .env.example             every setting, plus the per-machine COMPOSE_FILE
@@ -153,7 +163,7 @@ build:   docker compose build
 ## Conventions
 
 - Develop inside Docker: source mounted, uvicorn reloads on save. The Windows host needs only Docker Desktop.
-- Each external system (Notion, yt-dlp, instaloader, ffmpeg, Ollama, whisper) sits behind a small interface so tests swap in a fake.
+- Each external system (Notion, yt-dlp, instaloader, the web, ffmpeg, Ollama, whisper) sits behind a small interface so tests swap in a fake.
 - Tests run offline: fakes for Notion and the downloaders, plus the clip in `tests/fixtures/` for real ffmpeg and whisper checks.
 - Pipeline steps check for their own output first, so a rerun resumes.
 - Lint and format with ruff.
@@ -161,18 +171,19 @@ build:   docker compose build
 
 ## Domain notes
 
-- **Post**: one Notion row ↔ one post, holding one or more **items** (video or image). Tiles, summaries, and AI tags are per post.
+- **Post**: one Notion row ↔ one post, holding zero or more **items** (video or image) and, for a page or a Reddit post, a **readable copy**. Tiles, summaries, and AI tags are per post. Its **kind** is what its tile shows: media (has items), page (a title card; no items) or placeholder (nothing fetched yet).
 - **Saved date**: the Notion row's created time. It drives ordering and date groups; the platform upload date is metadata only.
 - **User caption** vs **platform caption**: `Caption` in Notion is the user's note; the platform caption comes from the downloader. Stored separately, both searchable.
 - **Notion tags** vs **AI tags**: separate types in separate Notion properties and separate tag-bar rows. Promoting copies an AI tag into Notion tags.
 - **Pull** = Notion → app. **Push** = gallery edit → Notion. **Sync** = the button: pull, the deleted-in-Notion prompt, then process new rows.
 - **Deleted-in-Notion** and **local-only**: post states defined under Sync with Notion.
-- Logins: YouTube and Instagram reels, image posts and carousels download without one. Reddit and age-restricted Instagram posts need a session in `DATA_DIR/cookies.txt`, exported from secondary accounts, since Instagram flags scraping accounts.
+- Logins: YouTube, Instagram reels, image posts, carousels and profiles, and most pages download without one. Reddit (every request; it answers anonymous ones 403) and age-restricted posts need a session in `DATA_DIR/cookies.txt`, exported from secondary accounts, since Instagram flags scraping accounts.
 - The pipeline writes Notion first and local copies second (`posts.generated` holds a summary until Notion has it), so a pull mid-Sync can never undo a finished step.
 
 ## Open questions
 
 - Whisper on the GPU: speaches' pinned CUDA images are built on CUDA 12.4 / 12.6 (latest release 0.9.0-rc.3, Dec 2025), and the RTX 5070 Ti (Blackwell) needs 12.8+. Whisper therefore runs on the CPU, which the Ryzen 7700 handles easily for `small.en`. Revisit if speaches ships a 12.8+ build.
-- Instagram's anonymous limit for instaloader is low: a burst of ~25 queries got "401 Please wait a few minutes" on 2026-10-25, and it still held an hour later while yt-dlp kept working. Only carousels with videos depend on it now. instaloader signing in from `cookies.txt` should raise the limit; untested until `cookies.txt` exists.
+- Instagram's anonymous limit for instaloader is low: a burst of ~25 queries got "401 Please wait a few minutes" on 2026-10-25, and it still held an hour later while yt-dlp kept working. Carousels with videos and profiles depend on it (a profile is one request; on 2026-11-04 a second request in a row got 429). instaloader signing in from `cookies.txt` should raise the limit; untested until `cookies.txt` exists.
+- Reddit with a session is untested: the code follows Reddit's documented JSON (`/comments/<id>/.json`), and share links resolve by following their redirect. Try it once `cookies.txt` holds a Reddit session.
 - N100 throughput is unmeasured: time a Sync on ZimaOS before deciding to move there.
 - Future: an iOS-only native app on the JSON API.

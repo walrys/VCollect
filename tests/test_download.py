@@ -8,6 +8,8 @@ import instaloader
 import pytest
 import yt_dlp
 
+from app.pipeline import download as download_module
+from app.pipeline.content import PageCopy
 from app.pipeline.download import (
     INSTAGRAM_IMAGES,
     Download,
@@ -16,8 +18,9 @@ from app.pipeline.download import (
     RawItem,
     classify,
 )
-from app.pipeline.errors import LoginNeeded, PostFailed, TryLater
+from app.pipeline.errors import LoginNeeded, PostFailed, PostNeedsLogin, TryLater
 from app.pipeline.urls import normalise
+from tests.fakes.web import UNREACHABLE, FakeWeb, answer_with, html, image
 
 
 def route(monkeypatch, tmp_path, url, yt_dlp_result):
@@ -141,10 +144,11 @@ def test_carousels_with_videos_go_to_instaloader(monkeypatch, tmp_path, kinds):
 
 def test_a_run_that_instaloader_refused_stops_asking_it(monkeypatch, tmp_path):
     fake_cdn(monkeypatch)
-    skip = {INSTAGRAM_IMAGES: "Instagram is limiting anonymous requests"}
+    wall = LoginNeeded(INSTAGRAM_IMAGES, "Instagram is limiting anonymous requests", False)
+    skip = {INSTAGRAM_IMAGES: wall}
     with pytest.raises(LoginNeeded, match="limiting anonymous requests") as caught:
         download_page(monkeypatch, tmp_path, page("image", "video"), skip)
-    assert caught.value.site == INSTAGRAM_IMAGES
+    assert (caught.value.site, caught.value.needs_login) == (INSTAGRAM_IMAGES, False)
 
     # Posts yt-dlp can see still download.
     used, download = download_page(monkeypatch, tmp_path / "next", page("image", "image"), skip)
@@ -300,6 +304,23 @@ def test_instaloader_errors(monkeypatch, tmp_path, error, expected, message):
     if expected is LoginNeeded:
         # Named apart from "Instagram", so the run keeps fetching reels.
         assert caught.value.site == INSTAGRAM_IMAGES != normalise("instagram.com/p/AbC/").site
+        # Only a login wall is one a session would solve; a rate limit passes.
+        assert caught.value.needs_login == ("cookies.txt" in message)
+
+
+def test_instaloader_gives_up_on_the_first_refusal(monkeypatch, tmp_path):
+    # Left to itself it sleeps out a 429 for up to half an hour, holding up the Sync.
+    built = []
+    real = instaloader.Instaloader.__init__
+
+    def spy(self, *args, **kwargs):
+        built.append(kwargs.get("max_connection_attempts"))
+        real(self, *args, **kwargs)
+
+    monkeypatch.setattr(instaloader.Instaloader, "__init__", spy)
+    fake_instagram(monkeypatch, instagram_post("GraphImage", ["https://cdn/photo.jpg"]))
+    download_image_post(tmp_path)
+    assert built == [1]
 
 
 def test_instaloader_signs_in_with_cookies_txt(monkeypatch, tmp_path):
@@ -352,6 +373,23 @@ def test_gone_posts_fail_for_good(output):
     assert isinstance(error, PostFailed)
 
 
+@pytest.mark.parametrize(
+    "output, site",
+    [
+        ("ERROR: [Instagram] DdVargvpEQ8: This content isn't available to everyone: It can't be"
+         " seen by certain audiences.", "Instagram"),
+        ("ERROR: [youtube] abc: Sign in to confirm your age. This video may be inappropriate for"
+         " some users.", "YouTube"),
+    ],
+)  # fmt: skip
+def test_an_age_wall_needs_a_login_for_that_post_alone(output, site):
+    error = classify(output, site)
+    # Not LoginNeeded: that would skip every other post of the site for the run.
+    assert type(error) is PostNeedsLogin
+    assert error.needs_login
+    assert str(error).startswith(f"Age-restricted: {site} shows it only to a logged-in account")
+
+
 def test_anything_else_is_retried():
     error = classify("ERROR: Unable to download webpage: <urlopen error timed out>", "YouTube")
     assert type(error) is TryLater
@@ -368,3 +406,221 @@ def test_a_download_survives_its_manifest():
         thumbnail="01.webp",
     )
     assert Download.from_json(download.to_json()) == download
+    with_page = Download(
+        items=[],
+        title="t",
+        uploader="u",
+        caption="c",
+        subtitles=None,
+        thumbnail=None,
+        page=PageCopy(html="<p>x</p>", text="x", images=["page/01.png"]),
+        url="https://www.reddit.com/comments/abc/",
+    )
+    assert Download.from_json(with_page.to_json()) == with_page
+
+
+# ----- Links that are not a video post -----
+
+ARTICLE = (
+    "<html><head><title>Notes</title><meta property='og:description' content='About bread'>"
+    "</head><body><article><h1>Notes</h1>"
+    + "".join(
+        f"<p>Bread wants time, warmth and a lively starter; patience does the rest ({n}).</p>"
+        for n in range(6)
+    )
+    + "<img src='/loaf.png'></article></body></html>"
+)
+
+
+def fetch(tmp_path, url, web, skip_sites=None):
+    downloader = Downloader(tmp_path / "cookies.txt", web=web)
+    dest = tmp_path / "raw"
+    return asyncio.run(downloader.download(normalise(url), dest, skip_sites or {})), dest
+
+
+def no_yt_dlp(monkeypatch):
+    def refuse(self, post, dest):
+        raise AssertionError(f"yt-dlp asked for {post.url}")
+
+    monkeypatch.setattr(Downloader, "_yt_dlp", refuse)
+
+
+def test_a_page_on_a_site_yt_dlp_does_not_know_skips_yt_dlp(monkeypatch, tmp_path, samples):
+    no_yt_dlp(monkeypatch)
+    png = samples["photo.png"].read_bytes()
+    web = FakeWeb(
+        {
+            "https://bread.example/notes": html(ARTICLE, "https://bread.example/notes"),
+            "https://bread.example/loaf.png": image(png),
+        }
+    )
+
+    result, dest = fetch(tmp_path, "https://bread.example/notes?utm_source=x", web)
+
+    assert (result.items, result.title, result.caption) == ([], "Notes", "About bread")
+    assert "Bread wants time" in result.page.html and "Bread wants time" in result.page.text
+    assert result.page.images == ["page/01.png"]
+    assert '<img src="page/01.png"' in result.page.html
+    assert (dest / "page" / "01.png").read_bytes() == png
+
+
+def test_a_page_with_nothing_to_read_keeps_its_description(monkeypatch, tmp_path):
+    no_yt_dlp(monkeypatch)
+    shell = "<html><head><title>An app</title><meta name='description' content='Does things'>"
+    web = FakeWeb({"https://app.example/": html(shell + "</head><body></body></html>", "")})
+
+    result, _ = fetch(tmp_path, "https://app.example/", web)
+
+    assert (result.title, result.page) == ("An app", PageCopy("", "Does things", []))
+
+
+def test_when_yt_dlp_finds_no_video_the_page_is_kept(monkeypatch, tmp_path):
+    def text_tweet(self, post, dest):
+        raise download_module.NoMedia("No video could be found in this tweet")
+
+    monkeypatch.setattr(Downloader, "_yt_dlp", text_tweet)
+    url = "https://x.com/someone/status/123"
+    web = FakeWeb({url: html(ARTICLE, url)})
+
+    result, _ = fetch(tmp_path, url, web)
+
+    assert result.title == "Notes"
+    assert web.calls[0] == url
+
+
+def test_a_link_to_an_image_is_an_image_post(monkeypatch, tmp_path, samples):
+    no_yt_dlp(monkeypatch)
+    png = samples["photo.png"].read_bytes()
+    web = FakeWeb({"https://cdn.example/art/sunset.png": image(png)})
+
+    result, _ = fetch(tmp_path, "https://cdn.example/art/sunset.png", web)
+
+    assert result.items == [RawItem("01.png", "image")]
+    assert (result.title, result.page) == ("sunset.png", None)
+
+
+@pytest.mark.parametrize(
+    "answer, error, message",
+    [
+        (answer_with(404), PostFailed, r"gone \(404\)"),
+        (answer_with(410), PostFailed, r"gone \(410\)"),
+        (answer_with(403), PostFailed, r"example.com refused the download \(403\)"),
+        (answer_with(503, b"<title>Just a moment...</title>"), PostFailed, "a bot check"),
+        (answer_with(503), TryLater, "answered 503"),
+        (answer_with(429), TryLater, "answered 429"),
+        (UNREACHABLE, TryLater, "Could not reach"),
+    ],
+)
+def test_what_a_site_says_decides_failed_or_later(monkeypatch, tmp_path, answer, error, message):
+    no_yt_dlp(monkeypatch)
+    web = FakeWeb({"https://example.com/page": answer})
+    with pytest.raises(error, match=message) as caught:
+        fetch(tmp_path, "https://example.com/page", web)
+    assert type(caught.value) is error
+
+
+def profile_answer(**user):
+    return {
+        "data": {
+            "user": {
+                "username": "indiegamejoe",
+                "full_name": "Joe Indie",
+                "biography": "I help indie games\nfind players",
+                "category_name": "Marketing agency",
+                "external_url": "https://joe.example",
+                "bio_links": [{"url": "https://joe.example"}, {"url": "https://links.example/joe"}],
+                "edge_followed_by": {"count": 72429},
+                "edge_follow": {"count": 300},
+                "edge_owner_to_timeline_media": {"count": 1234},
+                "profile_pic_url_hd": "https://cdn.example/joe.jpg",
+                "is_private": False,
+                **user,
+            }
+        }
+    }
+
+
+def fake_profile(monkeypatch, answer):
+    asked = []
+
+    def get_json(self, path, params, **kwargs):
+        asked.append((path, params))
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    monkeypatch.setattr(instaloader.InstaloaderContext, "get_json", get_json)
+    return asked
+
+
+def test_an_instagram_profile_is_one_request_and_a_card(monkeypatch, tmp_path, samples):
+    asked = fake_profile(monkeypatch, profile_answer())
+    picture = image(samples["photo.png"].read_bytes(), content_type="image/jpeg")
+    web = FakeWeb({"https://cdn.example/joe.jpg": picture})
+
+    result, _ = fetch(tmp_path, "https://www.instagram.com/IndieGameJoe/", web)
+
+    assert asked == [("api/v1/users/web_profile_info/", {"username": "indiegamejoe"})]
+    assert (result.title, result.uploader) == ("Joe Indie (@indiegamejoe)", "@indiegamejoe")
+    assert result.caption == "I help indie games\nfind players"
+    text = result.page.text
+    assert "@indiegamejoe · Marketing agency" in text
+    assert "72,429 followers · 1,234 posts · 300 following" in text
+    assert text.count("https://joe.example") == 1 and "https://links.example/joe" in text
+    assert result.page.images == ["page/01.jpg"]
+
+
+def test_a_missing_profile_fails(monkeypatch, tmp_path):
+    fake_profile(monkeypatch, instaloader.exceptions.QueryReturnedNotFoundException("404"))
+    with pytest.raises(PostFailed, match="no profile @nobody"):
+        fetch(tmp_path, "https://www.instagram.com/nobody/", FakeWeb())
+
+
+def test_a_rate_limited_profile_waits_and_the_run_stops_asking(monkeypatch, tmp_path):
+    refusal = instaloader.exceptions.ConnectionException("JSON Query: 429 Too Many Requests")
+    fake_profile(monkeypatch, refusal)
+    with pytest.raises(LoginNeeded) as caught:
+        fetch(tmp_path, "https://www.instagram.com/someone/", FakeWeb())
+    assert (caught.value.site, caught.value.needs_login) == (INSTAGRAM_IMAGES, False)
+
+    asked = fake_profile(monkeypatch, profile_answer())
+    skip = {INSTAGRAM_IMAGES: caught.value}
+    with pytest.raises(LoginNeeded):
+        fetch(tmp_path / "next", "https://www.instagram.com/other/", FakeWeb(), skip)
+    assert asked == []
+
+
+def test_a_youtube_channel_lists_its_latest_videos(monkeypatch, tmp_path):
+    asked = []
+
+    def extract_info(self, url, download=True, **kwargs):
+        asked.append((url, self.params.get("extract_flat"), download))
+        return {
+            "channel": "3Blue1Brown",
+            "uploader_id": "@3blue1brown",
+            "channel_follower_count": 8740000,
+            "description": "Math videos",
+            "thumbnails": [{"id": "avatar_uncropped", "url": "https://yt.example/a.jpg"}],
+            "entries": [
+                {
+                    "url": "https://www.youtube.com/watch?v=LKrwhjOI8Nc",
+                    "title": "Math",
+                    "duration": 2444,
+                },
+                {
+                    "url": "https://www.youtube.com/watch?v=Nbwv5wHQoj0",
+                    "title": "IMO",
+                    "duration": 3116,
+                },
+            ],
+        }
+
+    monkeypatch.setattr(yt_dlp.YoutubeDL, "extract_info", extract_info)
+
+    result, _ = fetch(tmp_path, "https://www.youtube.com/@3Blue1Brown", FakeWeb())
+
+    assert asked == [("https://www.youtube.com/@3blue1brown/videos", "in_playlist", False)]
+    assert (result.title, result.uploader, result.items) == ("3Blue1Brown", "@3blue1brown", [])
+    assert "8,740,000 subscribers" in result.page.text
+    assert "IMO 51:56" in result.page.text
+    assert 'href="https://www.youtube.com/watch?v=LKrwhjOI8Nc"' in result.page.html

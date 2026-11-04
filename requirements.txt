@@ -2,6 +2,10 @@ fastapi>=0.115
 uvicorn[standard]>=0.32
 httpx>=0.28
 pydantic-settings>=2.6
+# Pages: fetched as a browser would, reduced to a readable copy, sanitised.
+curl_cffi>=0.11
+trafilatura>=2.0
+nh3>=0.3
 # Unpinned on purpose: the entrypoint upgrades both on every server start.
 yt-dlp[default]
 instaloader

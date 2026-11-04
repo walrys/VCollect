@@ -1,6 +1,7 @@
 // Before Sync: the posts whose Notion rows were deleted. Ticked ones are deleted here too;
 // the rest stay in the gallery as local-only posts and are never asked about again.
 
+import { faceFor } from "./faces.js";
 import { errorText, toast } from "./toast.js";
 
 const el = (id) => document.getElementById(id);
@@ -56,14 +57,21 @@ export function askAboutDeleted(posts) {
 function choiceTile(post) {
   const tile = document.createElement("label");
   tile.className = "deleted-tile";
-  const image = document.createElement("img");
-  image.src = post.thumb;
-  image.alt = "";
-  image.loading = "lazy";
   const box = document.createElement("input");
   box.type = "checkbox";
   box.checked = true;
   box.setAttribute("aria-label", `Delete ${post.caption || post.title || post.url}`);
+  // A page or a link never fetched has no picture: its title card or placeholder, which
+  // carries its own words.
+  const face = faceFor(post, { badge: false });
+  if (face) {
+    tile.append(face, box);
+    return tile;
+  }
+  const image = document.createElement("img");
+  image.src = post.thumb;
+  image.alt = "";
+  image.loading = "lazy";
   const caption = document.createElement("span");
   caption.className = "tile-caption";
   caption.textContent = post.caption || post.title || post.url;

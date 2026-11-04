@@ -107,8 +107,8 @@ def test_delete_trashes_the_row_and_removes_the_files(synced, settings):
     assert response.status_code == 200
     assert synced.notion.trashed == [synced.pages["synth patch"]]
     assert not media.exists()
-    captions = [p["caption"] for p in synced.client.get("/api/posts").json()["posts"]]
-    assert captions == ["pasta trick"]
+    captions = [p["caption"] for p in synced.posts()]
+    assert captions == ["", "pasta trick"]  # the private profile has no caption
     assert synced.search("synth") == []
 
 
@@ -144,7 +144,12 @@ def test_add_link_warns_about_a_link_already_saved(synced):
     assert forced.status_code == 201
 
 
-def test_add_link_refuses_what_is_not_a_post(synced):
+def test_add_link_takes_any_link(synced):
     response = synced.client.post("/api/posts", json={"url": "https://www.instagram.com/someone"})
+    assert response.status_code == 201
+
+
+def test_add_link_refuses_what_is_not_a_link(synced):
+    response = synced.client.post("/api/posts", json={"url": "an idea for later"})
     assert response.status_code == 422
-    assert "Not a single post" in response.json()["detail"]
+    assert "not a link" in response.json()["detail"]

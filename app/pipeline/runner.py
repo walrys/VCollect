@@ -134,7 +134,7 @@ class Syncer:
                         " AND status = 'Not started' ORDER BY saved_at DESC"
                     ).fetchall()
                     self._enqueue([post_id for (post_id,) in waiting])
-                blocked_sites: dict[str, str] = {}  # site -> why the run stopped asking it
+                blocked_sites: dict[str, LoginNeeded] = {}  # site -> the wall met there
                 while self._queue:
                     if self._cancelled:
                         progress.stopped = "Cancelled"
@@ -156,7 +156,7 @@ class Syncer:
             progress.finished_at = _now()
 
     async def _one(
-        self, conn: sqlite3.Connection, post_id: int, blocked_sites: dict[str, str]
+        self, conn: sqlite3.Connection, post_id: int, blocked_sites: dict[str, LoginNeeded]
     ) -> None:
         progress = self.progress
         post = conn.execute(
@@ -165,6 +165,7 @@ class Syncer:
         label = post["user_caption"] or post["url"] or f"Post {post_id}"
         progress.current, progress.step = label, "starting"
         retry_error = ""  # why the post is left for the next Sync, if it is
+        needs_login = False  # and whether a session in cookies.txt would solve it
         try:
             await self.pipeline.process(conn, post_id, self._on_step, blocked_sites)
             progress.done += 1
@@ -176,13 +177,13 @@ class Syncer:
             self._problem(f"{label}: {error}")
         except LoginNeeded as error:
             progress.later += 1
-            retry_error = str(error)
+            retry_error, needs_login = str(error), error.needs_login
             if error.site not in blocked_sites:
-                blocked_sites[error.site] = str(error)
+                blocked_sites[error.site] = error
                 self._problem(str(error))
         except TryLater as error:
             progress.later += 1
-            retry_error = str(error)
+            retry_error, needs_login = str(error), error.needs_login
             self._problem(f"{label}: {error}")
         except Exception as error:
             # A bug with one post should not end the run; the post is retried next Sync.
@@ -190,7 +191,7 @@ class Syncer:
             progress.later += 1
             retry_error = f"Unexpected error: {error}"
             self._problem(f"{label}: unexpected error: {error}")
-        _tried(conn, post_id, retry_error)
+        _tried(conn, post_id, retry_error, needs_login)
         progress.handled += 1
 
     def _on_step(self, step: str) -> None:
@@ -203,11 +204,11 @@ class Syncer:
             self.progress.problems.append(message)
 
 
-def _tried(conn: sqlite3.Connection, post_id: int, retry_error: str) -> None:
+def _tried(conn: sqlite3.Connection, post_id: int, retry_error: str, needs_login: bool) -> None:
     with conn:
         conn.execute(
-            "UPDATE posts SET retry_error = ?, tried_at = ? WHERE id = ?",
-            (retry_error, _now(), post_id),
+            "UPDATE posts SET retry_error = ?, needs_login = ?, tried_at = ? WHERE id = ?",
+            (retry_error, int(needs_login), _now(), post_id),
         )
 
 

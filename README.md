@@ -1,6 +1,6 @@
 # VCollect
 
-Turns a Notion database of saved video links into a local, searchable video gallery. Press **Sync** and each new link is downloaded, compressed, transcribed and summarised by local AI. The result is written back to Notion, and the post shows up in a web gallery on your own network.
+Turns a Notion database of saved links into a local, searchable gallery. Press **Sync** and each new link is downloaded, compressed, transcribed and summarised by local AI; a link that is not a video (an article, a profile, a Reddit post) is saved as a readable copy of its page. The result is written back to Notion, and the post shows up in a web gallery on your own network.
 
 Everything runs in Docker on your own machine. Nothing is paid or cloud-hosted except Notion itself.
 
@@ -78,7 +78,7 @@ You only pull the Ollama model once per machine; it is kept in the `ollama-model
 docker compose up -d
 ```
 
-Open <http://localhost:8000>, or `http://<machine>:<PORT>` from another device on your LAN or Tailscale. The gallery is empty until the first Sync.
+Open <http://localhost:8000>, or `http://<machine>:<PORT>` from another device on your LAN or Tailscale. Every row shows at once, as a placeholder until the first Sync fetches it.
 
 To check that everything is connected:
 
@@ -90,15 +90,15 @@ Every service should report ready: `notion.configured: true` with `error: null`,
 
 Press **Sync** in the gallery to process every new row. Progress shows in place of the button. Rows that fail, or that a Sync leaves for later, are listed on the Processing page (☰ → Processing).
 
-## 6. Optional: logins for Reddit and age-restricted Instagram posts
+## 6. Optional: logins for Reddit and age-restricted posts
 
-YouTube and Instagram (reels, image posts and carousels) download without a login. Reddit and age-restricted Instagram posts need a logged-in browser session, which also raises Instagram's limit on anonymous requests:
+YouTube, Instagram (reels, image posts, carousels and profiles) and most web pages download without a login. Reddit and age-restricted posts need a logged-in browser session, which also raises Instagram's limit on anonymous requests:
 
 1. Sign in to the site in a browser **with a secondary account**. Instagram flags accounts that scrape, so keep your main one out of it.
 2. Export the cookies in Netscape `cookies.txt` format with a browser extension.
 3. Save the file as `cookies.txt` inside `DATA_DIR` (by default `./data/cookies.txt`).
 
-The next Sync picks it up; no restart needed. Until then, those posts are left for later with a "needs a login" reason on the Processing page.
+The next Sync picks it up; no restart needed. Until then, those posts wait in the gallery with a **Needs login** badge; their pop-up says whether `cookies.txt` has the site's cookies, and **Retry** there tries again at once.
 
 ## Running AI on another machine
 
@@ -153,5 +153,7 @@ Tests run offline. They use fakes for Notion, the downloaders, whisper and Ollam
 | Ollama ignores the GPU | Check that `COMPOSE_FILE` includes `docker-compose.gpu.yml`, and that `docker run --rm --gpus all ubuntu nvidia-smi` works on the host. |
 | Rows stay under "To retry" | Their reason is on the Processing page. Network errors, rate limits and AI services being down are retried by every Sync. |
 | "needs a login" | Add or refresh `DATA_DIR/cookies.txt` (step 6). Session cookies expire, so export them again. |
-| "Instagram is limiting anonymous requests" | Carousels that mix videos and images wait for the next Sync; everything else carries on. It passes after a while; `cookies.txt` (step 6) raises the limit. |
+| "Instagram is limiting anonymous requests" | Profiles and carousels that mix videos and images wait for the next Sync; everything else carries on. It passes after a while; `cookies.txt` (step 6) raises the limit. |
+| A post shows "Needs login" | Its site (Reddit, or an age-restricted post) only shows it to a logged-in account. The post's pop-up says whether `cookies.txt` has that site's cookies; add them (step 6) and press Retry there. |
+| "refused the download" | The site blocks automated requests (403 or a bot check). If it has a login, its cookies in `cookies.txt` may help; then press Retry. |
 | Sync refuses to download | Disk usage is above 95% of `DISK_CAP_GB` (shown in the ☰ menu). Delete posts or raise the cap. |

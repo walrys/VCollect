@@ -1,5 +1,8 @@
 // The grid: tag filters (instant, in the browser), search (on the server), date groups.
+// Every Notion row has a tile: its picture, a title card for a page, or a placeholder until
+// Sync has fetched it.
 
+import { faceFor, STATUS } from "./faces.js";
 import { openPlayer } from "./player.js";
 import { tagChip, tagKey } from "./tags.js";
 
@@ -63,6 +66,8 @@ export async function loadPosts() {
     return;
   }
   render();
+  // An open player swaps in the new copy of its post: a placeholder retried becomes the post.
+  document.dispatchEvent(new CustomEvent("vcollect:posts", { detail: state.posts }));
 }
 
 // The posts the dialog before Sync asks about.
@@ -238,30 +243,39 @@ function tileFor(post) {
 function tile(post) {
   const button = document.createElement("button");
   button.type = "button";
-  button.className = "tile";
-  const image = document.createElement("img");
-  image.loading = "lazy";
-  image.decoding = "async";
-  image.alt = post.caption || post.title || "";
-  image.src = post.thumb;
-  // Fades in once loaded, rather than popping in line by line.
-  if (!image.complete) {
-    image.classList.add("loading");
-    const shown = () => image.classList.remove("loading");
-    image.addEventListener("load", shown, { once: true });
-    image.addEventListener("error", shown, { once: true });
+  button.className = `tile tile-${post.kind}`;
+  const face = faceFor(post, { badge: false });
+  if (face) {
+    button.append(face);
+    button.setAttribute("aria-label", post.title || post.caption || post.url);
+  } else {
+    const image = document.createElement("img");
+    image.loading = "lazy";
+    image.decoding = "async";
+    image.alt = post.caption || post.title || "";
+    image.src = post.thumb;
+    // Fades in once loaded, rather than popping in line by line.
+    if (!image.complete) {
+      image.classList.add("loading");
+      const shown = () => image.classList.remove("loading");
+      image.addEventListener("load", shown, { once: true });
+      image.addEventListener("error", shown, { once: true });
+    }
+    button.append(image);
   }
-  button.append(image);
 
   const badges = document.createElement("div");
   badges.className = "badges";
+  const status = post.kind === "placeholder" && STATUS[post.status];
+  if (status) badges.append(badge(status.badge, status.tone));
   if (post.items.length > 1) badges.append(badge(`1/${post.items.length}`, "", ICONS.stack));
   else if (post.items[0]?.kind === "image") badges.append(badge("Photo", "", ICONS.photo));
   if (post.state === "deleted_in_notion") badges.append(badge("Deleted in Notion", "warn"));
   if (post.state === "local_only") badges.append(badge("Not in Notion", "warn"));
   button.append(badges);
 
-  const label = post.caption || post.title;
+  // A title card and a placeholder carry their own words.
+  const label = !face && (post.caption || post.title);
   if (label) {
     const caption = document.createElement("span");
     caption.className = "tile-caption";
