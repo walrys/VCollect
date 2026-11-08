@@ -138,6 +138,13 @@ MIGRATIONS: list[str] = [
     );
     {SEARCH_ROWS};
     """,
+    # YouTube videos other than Shorts are kept as a preview (posts.kind 'preview', beside media
+    # and page: the thumbnail, captions and details) until their video is asked for.
+    """
+    ALTER TABLE posts ADD COLUMN duration REAL;  -- a preview's length on its site, in seconds
+    -- The video of a preview was asked for and has not landed yet; every Sync tries again.
+    ALTER TABLE posts ADD COLUMN want_video INTEGER NOT NULL DEFAULT 0;
+    """,
 ]
 
 

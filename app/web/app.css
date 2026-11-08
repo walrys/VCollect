@@ -424,13 +424,9 @@ svg {
   padding: 14px;
 }
 
-.add-row {
-  display: flex;
-  gap: 8px;
-}
-
-.add-row input {
-  flex: 1;
+.add-input,
+.add-panel .tag-input {
+  width: 100%;
   min-width: 0;
   height: 36px;
   padding: 0 12px;
@@ -442,9 +438,24 @@ svg {
   font-size: 1rem;
 }
 
-.add-row input:focus {
+.add-input:focus {
   outline: none;
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+.add-tags .tags:not(:empty) {
+  margin-bottom: 8px;
+}
+
+.add-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 2px;
+}
+
+.add-foot .panel-note {
+  flex: 1;
 }
 
 .menu-panel:popover-open {

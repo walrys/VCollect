@@ -13,18 +13,26 @@ from app.pipeline.urls import PostUrl
 
 class FakeDownloader:
     """Copies sample files in as the post's media. `errors` maps a link fragment to the
-    exception that link raises; `pages` maps one to what it brings back instead (see page())."""
+    exception that link raises; `pages` maps one to what it brings back instead (see page());
+    `previews` maps one to a thumbnail: a long YouTube video, a preview unless the video is
+    asked for."""
 
     def __init__(self, files: list[Path], subtitles: str | None = None):
         self.files = files
         self.subtitles = subtitles
         self.errors: dict[str, Exception] = {}
         self.pages: dict[str, Callable[[Path], Download]] = {}
+        self.previews: dict[str, Path] = {}
         self.calls: list[str] = []
+        self.video_calls: list[str] = []  # the links whose video was asked for
         self.skips: list[dict[str, str]] = []  # the walls each call was told the run skips
 
-    async def download(self, link: PostUrl, dest: Path, skip_sites=None) -> Download:
+    async def download(
+        self, link: PostUrl, dest: Path, skip_sites=None, video: bool = False
+    ) -> Download:
         self.calls.append(link.url)
+        if video:
+            self.video_calls.append(link.url)
         self.skips.append({site: str(wall) for site, wall in (skip_sites or {}).items()})
         for fragment, error in self.errors.items():
             if fragment in link.url:
@@ -33,6 +41,19 @@ class FakeDownloader:
         for fragment, make in self.pages.items():
             if fragment in link.url:
                 return make(dest)
+        for fragment, thumbnail in self.previews.items():
+            if fragment in link.url and not video:
+                shutil.copyfile(thumbnail, dest / f"01{thumbnail.suffix}")
+                return Download(
+                    items=[],
+                    title="A long talk",
+                    uploader="someone",
+                    caption="the platform caption",
+                    subtitles=self.subtitles,
+                    thumbnail=f"01{thumbnail.suffix}",
+                    preview=True,
+                    duration=3600.0,
+                )
         return Download(
             items=_copy(self.files, dest),
             title="A title",

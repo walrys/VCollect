@@ -66,7 +66,11 @@ class Pipeline:
         skip_sites: Mapping[str, LoginNeeded] = MappingProxyType({}),
     ) -> None:
         """Raises PostFailed once the row is marked Failed, or TryLater to leave it for later.
-        `skip_sites` maps each site the run stopped asking to the wall it met there."""
+        `skip_sites` maps each site the run stopped asking to the wall it met there. A preview
+        whose video was asked for gets its video instead (see _fetch_video)."""
+        if _post(conn, post_id)["want_video"]:
+            await self._fetch_video(conn, post_id, on_step, skip_sites)
+            return
         try:
             await self._steps(conn, post_id, on_step, skip_sites)
         except PostFailed as failure:
@@ -104,13 +108,45 @@ class Pipeline:
         on_step("saving to Notion")
         await self._finish(conn, post_id)
 
-    async def _fetch_media(self, conn, post_id: int, link: PostUrl, on_step, skip_sites) -> None:
+    async def _fetch_video(self, conn, post_id: int, on_step, skip_sites) -> None:
+        """The video of a preview, asked for in the gallery. The post stays Done and keeps its
+        summary and tags, and Notion is not asked; whisper makes the transcript the captions
+        did not give. A failure leaves the preview as it was: PostFailed for good, a passing
+        one (TryLater) until the next Sync, which tries again."""
+        post = _post(conn, post_id)
+        link = normalise(post["url"])
+        if link.site in skip_sites:
+            raise skip_sites[link.site].again()
+        if post["kind"] == "preview":
+            try:
+                await self._fetch_media(conn, post_id, link, on_step, skip_sites, video=True)
+            except PostFailed:
+                shutil.rmtree(self.work_root / str(post_id), ignore_errors=True)
+                with conn:
+                    conn.execute("UPDATE posts SET want_video = 0 WHERE id = ?", (post_id,))
+                raise
+
+        post = _post(conn, post_id)
+        if not post["transcript"]:
+            on_step("transcribing")
+            transcript = post["source_transcript"] or await self._whisper(conn, post_id)
+            with conn:
+                conn.execute("UPDATE posts SET transcript = ? WHERE id = ?", (transcript, post_id))
+                db.reindex_post(conn, post_id)
+        with conn:
+            conn.execute("UPDATE posts SET want_video = 0 WHERE id = ?", (post_id,))
+
+    async def _fetch_media(
+        self, conn, post_id: int, link: PostUrl, on_step, skip_sites, video: bool = False
+    ) -> None:
         work = self.work_root / str(post_id)
         manifest = work / "download.json"
         if not manifest.exists():
             on_step("downloading")
             shutil.rmtree(work, ignore_errors=True)  # leftovers of an interrupted download
-            download = await self.services.downloader.download(link, work / "raw", skip_sites)
+            download = await self.services.downloader.download(
+                link, work / "raw", skip_sites, video=video
+            )
             manifest.write_text(download.to_json())
         download = Download.from_json(manifest.read_text())
         if download.url and download.url != link.url:
@@ -123,14 +159,61 @@ class Pipeline:
                 conn, _post(conn, post_id), dataclasses.replace(link, url=download.url)
             )
 
-        on_step("compressing" if download.items else "saving the page")
+        if download.items:
+            on_step("compressing")
+        else:
+            on_step("saving the preview" if download.preview else "saving the page")
         await self._store_media(conn, post_id, work / "raw", download)
         shutil.rmtree(work, ignore_errors=True)
 
     async def _store_media(self, conn, post_id: int, raw: Path, download: Download) -> None:
-        out = self.media_root / str(post_id)
+        # Made beside the post's files, which stay on show (a preview's thumbnail while its
+        # video compresses) until these replace them.
+        out = self.media_root / f"{post_id}.new"
         shutil.rmtree(out, ignore_errors=True)
         out.mkdir(parents=True)
+        try:
+            rows, thumb_file, page_file = await self._convert(post_id, raw, out, download)
+        except BaseException:
+            shutil.rmtree(out, ignore_errors=True)
+            raise
+        final = self.media_root / str(post_id)
+        shutil.rmtree(final, ignore_errors=True)
+        out.rename(final)
+
+        with conn:
+            conn.execute("DELETE FROM items WHERE post_id = ?", (post_id,))
+            conn.executemany(
+                "INSERT INTO items (post_id, position, kind, file, width, height, duration, bytes)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (pid, pos, kind, f"{pid}/{path.name}", i.width, i.height, i.duration, i.bytes)
+                    for pid, pos, kind, path, i in rows
+                ],
+            )
+            conn.execute(
+                "UPDATE posts SET title = ?, uploader = ?, platform_caption = ?,"
+                " source_transcript = ?, thumb_file = ?, kind = ?, page_file = ?, page_text = ?,"
+                " duration = ?, media_ready = 1 WHERE id = ?",
+                (
+                    download.title,
+                    download.uploader,
+                    download.caption,
+                    download.subtitles,
+                    thumb_file,
+                    "media" if rows else "preview" if download.preview else "page",
+                    page_file,
+                    download.page.text if download.page else "",
+                    download.duration if download.preview else None,
+                    post_id,
+                ),
+            )
+            db.reindex_post(conn, post_id)
+
+    async def _convert(
+        self, post_id: int, raw: Path, out: Path, download: Download
+    ) -> tuple[list[tuple], str | None, str | None]:
+        """Compresses the download into `out`: its items, thumbnail and readable copy."""
         rows = []
         for position, item in enumerate(download.items, start=1):
             stem = out / f"{position:02}"
@@ -152,35 +235,10 @@ class Pipeline:
             )
             await media.make_thumbnail(thumb_source, out / "thumb.webp")
             thumb_file = f"{post_id}/thumb.webp"
-        page_file = await self._store_page(post_id, raw, out, download)
-
-        with conn:
-            conn.execute("DELETE FROM items WHERE post_id = ?", (post_id,))
-            conn.executemany(
-                "INSERT INTO items (post_id, position, kind, file, width, height, duration, bytes)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                [
-                    (pid, pos, kind, f"{pid}/{path.name}", i.width, i.height, i.duration, i.bytes)
-                    for pid, pos, kind, path, i in rows
-                ],
-            )
-            conn.execute(
-                "UPDATE posts SET title = ?, uploader = ?, platform_caption = ?,"
-                " source_transcript = ?, thumb_file = ?, kind = ?, page_file = ?, page_text = ?,"
-                " media_ready = 1 WHERE id = ?",
-                (
-                    download.title,
-                    download.uploader,
-                    download.caption,
-                    download.subtitles,
-                    thumb_file,
-                    "media" if rows else "page",
-                    page_file,
-                    download.page.text if download.page else "",
-                    post_id,
-                ),
-            )
-            db.reindex_post(conn, post_id)
+        elif download.preview and download.thumbnail:
+            await media.make_thumbnail(raw / download.thumbnail, out / "thumb.webp")
+            thumb_file = f"{post_id}/thumb.webp"
+        return rows, thumb_file, await self._store_page(post_id, raw, out, download)
 
     async def _store_page(
         self, post_id: int, raw: Path, out: Path, download: Download
@@ -217,6 +275,9 @@ class Pipeline:
                 images += await media.keyframes(
                     self.media_root / videos[0]["file"], self.keyframes, scratch
                 )
+            if post["kind"] == "preview" and post["thumb_file"]:  # no frames to take
+                src = self.media_root / post["thumb_file"]
+                images.append(await media.llm_image(src, scratch / "thumb.jpg"))
             for index, item in enumerate(_items(conn, post["id"], "image")):
                 if len(images) >= MAX_MODEL_IMAGES:
                     break

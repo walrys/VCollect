@@ -175,6 +175,87 @@ def test_a_gone_post_is_marked_failed_in_notion(notion, conn, tmp_path, samples)
     assert not (tmp_path / "data" / "media" / str(post_id)).exists()
 
 
+def test_a_long_youtube_video_is_kept_as_a_preview(notion, conn, tmp_path, samples):
+    services = fake_services([samples["portrait.mp4"]], subtitles="from the captions")
+    services.downloader.previews["dvUGDMxl8OU"] = samples["photo.png"]
+    pipeline = make_pipeline(notion, tmp_path, services)
+    page_id, post_id = add_post(notion, conn, url="https://youtu.be/dvUGDMxl8OU")
+
+    steps = process(pipeline, conn, post_id)
+
+    assert steps == [
+        "downloading",
+        "saving the preview",
+        "transcribing",
+        "summarising",
+        "saving to Notion",
+    ]
+    assert notion.row(page_id)["status"] == "Done"
+    saved = post(conn, post_id)
+    assert (saved["kind"], saved["duration"], saved["transcript"]) == (
+        "preview",
+        3600.0,
+        "from the captions",
+    )
+    assert items(conn, post_id) == []
+    assert (tmp_path / "data" / "media" / saved["thumb_file"]).exists()
+    assert not (tmp_path / "data" / "media" / f"{post_id}.new").exists()
+    assert len(services.summariser.contexts[0].images) == 1  # the thumbnail, for frames
+
+
+def preview_wanted(notion, conn, tmp_path, samples):
+    """A preview whose video was asked for, without captions: its pipeline, post and page."""
+    services = fake_services([samples["portrait.mp4"]])
+    services.downloader.previews["dvUGDMxl8OU"] = samples["photo.png"]
+    pipeline = make_pipeline(notion, tmp_path, services)
+    page_id, post_id = add_post(notion, conn, url="https://youtu.be/dvUGDMxl8OU")
+    process(pipeline, conn, post_id)
+    with conn:
+        conn.execute("UPDATE posts SET want_video = 1 WHERE id = ?", (post_id,))
+    return pipeline, post_id, page_id
+
+
+def test_a_preview_gets_its_video_when_asked_for(notion, conn, tmp_path, samples):
+    pipeline, post_id, page_id = preview_wanted(notion, conn, tmp_path, samples)
+    assert post(conn, post_id)["transcript"] == ""
+    notion.refuse_page_updates = True  # Notion has nothing to hear: the row is Done already
+
+    steps = process(pipeline, conn, post_id)
+
+    assert steps == ["downloading", "compressing", "transcribing"]
+    saved = post(conn, post_id)
+    assert (saved["kind"], saved["status"], saved["want_video"]) == ("media", "Done", 0)
+    assert (saved["summary"], saved["transcript"]) == ("A short summary.", "hello from the video")
+    assert [i["kind"] for i in items(conn, post_id)] == ["video"]
+    assert (tmp_path / "data" / "media" / saved["thumb_file"]).exists()
+    services = pipeline.services
+    assert services.downloader.video_calls == ["https://www.youtube.com/watch?v=dvUGDMxl8OU"]
+    assert len(services.summariser.contexts) == 1  # the summary and tags stay
+
+
+@pytest.mark.parametrize(
+    ("error", "still_wanted"),
+    [
+        (PostFailed("Could not download: Video unavailable"), 0),
+        (TryLater("Download failed: timed out"), 1),  # the next Sync tries again
+    ],
+)
+def test_a_video_that_cannot_be_had_leaves_the_preview(
+    notion, conn, tmp_path, samples, error, still_wanted
+):
+    pipeline, post_id, page_id = preview_wanted(notion, conn, tmp_path, samples)
+    pipeline.services.downloader.errors["dvUGDMxl8OU"] = error
+
+    with pytest.raises(type(error)):
+        process(pipeline, conn, post_id)
+
+    saved = post(conn, post_id)
+    assert (saved["kind"], saved["status"]) == ("preview", "Done")
+    assert saved["want_video"] == still_wanted
+    assert notion.row(page_id)["status"] == "Done"
+    assert (tmp_path / "data" / "media" / saved["thumb_file"]).exists()
+
+
 def test_a_page_goes_all_the_way_to_done(notion, conn, tmp_path, samples):
     services = fake_services([samples["portrait.mp4"]])
     services.downloader.pages["indiegamejoe"] = page(

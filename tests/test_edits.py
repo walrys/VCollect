@@ -134,6 +134,35 @@ def test_add_link_creates_a_notion_row(synced):
     assert added["status"] == "Not started"
 
 
+def test_add_link_brings_its_caption_and_tags(synced):
+    response = synced.client.post(
+        "/api/posts",
+        json={
+            "url": "https://youtu.be/ccccccccccc",
+            "caption": " knife skills for later ",
+            "tags": ["Cooking", " brand   new ", "cooking"],
+        },
+    )
+
+    assert response.status_code == 201
+    rows = [synced.notion.row(page_id) for page_id in synced.notion._rows]
+    added = next(row for row in rows if row.get("url") == "https://youtu.be/ccccccccccc")
+    assert added["caption"] == "knife skills for later"
+    assert added["tags"] == ["Cooking", "brand new"]
+    post = synced.post("knife skills for later")
+    assert post["id"] == response.json()["created"]
+    assert post["tags"] == ["brand new", "Cooking"]  # the gallery lists them alphabetically
+    assert synced.search("knife") == [post["id"]]
+
+
+def test_add_link_refuses_a_tag_with_a_comma(synced):
+    response = synced.client.post(
+        "/api/posts", json={"url": "https://youtu.be/ddddddddddd", "tags": ["a, b"]}
+    )
+    assert response.status_code == 422
+    assert len(synced.notion._rows) == len(synced.pages)
+
+
 def test_add_link_warns_about_a_link_already_saved(synced):
     link = "https://www.instagram.com/p/AbCdEf/?igsh=xyz"
     response = synced.client.post("/api/posts", json={"url": link})

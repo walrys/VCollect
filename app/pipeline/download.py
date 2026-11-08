@@ -1,7 +1,8 @@
 """Downloaders. yt-dlp takes every video post and the images it can see; instaloader the
 Instagram carousels that mix videos and images, and profiles. Everything else is a page,
 saved as a readable copy: Reddit posts (from Reddit's JSON, with their video through yt-dlp),
-YouTube channels and playlists, and any other link."""
+YouTube channels and playlists, and any other link. Of YouTube videos only Shorts are
+downloaded; the rest are kept as a preview until their video is asked for."""
 
 import asyncio
 import functools
@@ -110,8 +111,11 @@ class Downloader:
         post: PostUrl,
         dest: Path,
         skip_sites: Mapping[str, LoginNeeded] = MappingProxyType({}),
+        video: bool = False,
     ) -> Download:
-        """`skip_sites` maps each site this run stopped asking to the wall it met there."""
+        """`skip_sites` maps each site this run stopped asking to the wall it met there.
+        A YouTube video that is not a Short comes back as a preview, unless `video` asks for
+        the video itself."""
         dest.mkdir(parents=True, exist_ok=True)
         if post.platform == "reddit":
             if not has_session(self.cookies, post.url):
@@ -127,8 +131,9 @@ class Downloader:
             return await asyncio.to_thread(self._youtube_list, post, dest)
         if post.kind == "page" or (post.platform == "other" and not has_site_extractor(post.url)):
             return await asyncio.to_thread(self._web_page, post, dest)
+        preview = post.platform == "youtube" and not video
         try:
-            return await asyncio.to_thread(self._yt_dlp, post, dest)
+            return await asyncio.to_thread(self._yt_dlp, post, dest, preview)
         except NotASingleVideo as found:
             _empty(dest)
             if urls := _image_urls(found.info):
@@ -142,7 +147,9 @@ class Downloader:
 
     # ----- yt-dlp -----
 
-    def _yt_dlp(self, post: PostUrl, dest: Path) -> Download:
+    def _yt_dlp(self, post: PostUrl, dest: Path, preview: bool = False) -> Download:
+        """`preview` keeps a YouTube video that is not a Short as a preview: its thumbnail,
+        captions and details, without the video."""
         options = {
             "quiet": True,
             "no_warnings": True,
@@ -167,7 +174,7 @@ class Downloader:
             # the separate streams are VP9 (a re-encode) and wait twice, once per stream.
             options |= {"format": "b/bv*+ba", "sleep_interval": 3, "max_sleep_interval": 8}
         try:
-            info = self._yt_dlp_fetch(post, options)
+            info = self._yt_dlp_fetch(post, options, preview)
         except yt_dlp.utils.DownloadError as error:
             text = str(error).lower()
             if post.platform == "instagram" and "no video formats found" in text:
@@ -179,27 +186,29 @@ class Downloader:
             # Subtitles are a bonus (YouTube rate-limits them on their own); whisper covers.
             options = {**options, "writesubtitles": False, "writeautomaticsub": False}
             try:
-                info = self._yt_dlp_fetch(post, options)
+                info = self._yt_dlp_fetch(post, options, preview)
             except yt_dlp.utils.DownloadError as retry_error:
                 raise classify(str(retry_error), post.site) from retry_error
 
+        thumbnails = [path for path in sorted(dest.iterdir()) if path.suffix in IMAGE_EXTENSIONS]
+        subtitle_files = sorted(dest.glob("*.vtt"))
+        details = {
+            "title": info.get("title") or "",
+            "uploader": info.get("uploader") or info.get("channel") or "",
+            "caption": info.get("description") or "",
+            "subtitles": vtt_to_text(subtitle_files[0].read_text()) if subtitle_files else None,
+            "thumbnail": thumbnails[0].name if thumbnails else None,
+        }
+        if preview and _long_form(info):
+            return Download(items=[], **details, preview=True, duration=info.get("duration"))
         items = [item for item in _media_in(dest) if item.kind == "video"]
         if not items:
             if _pages_too(post):
                 raise NoMedia("No video in this post")
             raise PostFailed("No video in this post")
-        thumbnails = [path for path in sorted(dest.iterdir()) if path.suffix in IMAGE_EXTENSIONS]
-        subtitle_files = sorted(dest.glob("*.vtt"))
-        return Download(
-            items=items,
-            title=info.get("title") or "",
-            uploader=info.get("uploader") or info.get("channel") or "",
-            caption=info.get("description") or "",
-            subtitles=vtt_to_text(subtitle_files[0].read_text()) if subtitle_files else None,
-            thumbnail=thumbnails[0].name if thumbnails else None,
-        )
+        return Download(items=items, **details)
 
-    def _yt_dlp_fetch(self, post: PostUrl, options: dict) -> dict:
+    def _yt_dlp_fetch(self, post: PostUrl, options: dict, preview: bool = False) -> dict:
         with yt_dlp.YoutubeDL(options) as ydl:
             info = ydl.extract_info(post.url, download=False, process=False)
             if info.get("_type") in {"playlist", "multi_video"}:
@@ -210,8 +219,14 @@ class Downloader:
                 raise PostFailed("Not a single post: a playlist or channel")
             if post.platform == "instagram" and _is_image(info):
                 raise NotASingleVideo(info)
+            if preview and _long_form(info):
+                # The thumbnail and captions only: yt-dlp writes them before the video.
+                ydl.params["skip_download"] = True
+                return ydl.process_ie_result(info, download=True)
             if info.get("is_live") and _pages_too(post):
                 raise NoMedia("A live stream")  # it would record until the stream ends
+            if info.get("is_live"):
+                raise TryLater("Live now: the video can be downloaded once the stream ends")
             minutes = (info.get("duration") or 0) / 60
             if self.max_duration_min and minutes > self.max_duration_min:
                 raise PostFailed(
@@ -555,6 +570,12 @@ def has_site_extractor(url: str) -> bool:
     """yt-dlp knows the site (TikTok, Vimeo, X ...): it goes first, and the page is the
     fallback. A site only its generic extractor would try is a page from the start."""
     return any(ie.suitable(url) for ie in _site_extractors())
+
+
+def _long_form(info: dict) -> bool:
+    """A YouTube video Sync keeps only a preview of: anything YouTube does not mark as a Short
+    (yt-dlp's media_type), streams included, live or over."""
+    return info.get("media_type") != "short"
 
 
 def _pages_too(post: PostUrl) -> bool:

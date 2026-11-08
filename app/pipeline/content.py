@@ -30,6 +30,10 @@ class Download:
     thumbnail: str | None  # relative to the download folder
     page: PageCopy | None = None
     url: str | None = None  # the post's canonical link, once a share link is resolved
+    # A video left on its site (a YouTube video that is not a Short): its thumbnail, captions
+    # and details, no items, until the video is asked for.
+    preview: bool = False
+    duration: float | None = None  # a preview's length, in seconds
 
     def to_json(self) -> str:
         return json.dumps(asdict(self))

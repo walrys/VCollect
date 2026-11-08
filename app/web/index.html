@@ -29,12 +29,16 @@
       </button>
       <form id="add-form" class="popover-panel add-panel" popover>
         <label class="panel-title" for="add-url">Add a link</label>
-        <div class="add-row">
-          <input id="add-url" type="url" placeholder="https://" required autocomplete="off"
-                 enterkeyhint="go">
-          <button class="button" type="submit">Add</button>
+        <input id="add-url" class="add-input" type="url" placeholder="https://" required
+               autocomplete="off" enterkeyhint="go">
+        <input id="add-caption" class="add-input" type="text" placeholder="Caption"
+               aria-label="Caption" autocomplete="off" enterkeyhint="go">
+        <!-- The Notion tags: chips and a box that adds one on Enter or comma (editor.js). -->
+        <div id="add-tags" class="add-tags"></div>
+        <div class="add-foot">
+          <p class="panel-note">It goes into Notion; the next Sync downloads it.</p>
+          <button id="add-submit" class="button" type="submit">Add</button>
         </div>
-        <p class="panel-note">It goes into Notion; the next Sync downloads it.</p>
       </form>
       <button id="sync" class="button sync-button" type="button" disabled>Sync</button>
       <div id="progress" class="progress" hidden>
@@ -199,6 +203,7 @@
           </div>
           <div class="player-actions">
             <button id="player-retry" class="button" type="button" hidden>Retry</button>
+            <button id="player-video" class="button" type="button" hidden>Download video</button>
             <button id="player-edit" class="button secondary" type="button">Edit</button>
             <button id="player-readd" class="button secondary" type="button">Re-add to Notion</button>
             <button id="player-delete" class="link-button danger" type="button">Delete</button>

@@ -47,17 +47,21 @@ export function renderEditor(form, post, { knownTags, onSave, onCancel, placehol
   caption.focus();
 }
 
-// Chips with a remove button, and a box that adds a tag on Enter or comma.
-// AI tag chips also offer "Promote", which copies the tag into the Notion tags.
-function tagEditor(field, kind, draft, known, onChange) {
+let lists = 0; // each tag box suggests from a datalist of its own
+
+// Chips with a remove button, and a box that adds a tag on Enter or comma; `draft[field]`
+// holds the tags. AI tag chips also offer "Promote", which copies the tag into the Notion tags.
+// Also the Add a link panel's tag box.
+export function tagEditor(field, kind, draft, known, onChange) {
   const element = document.createElement("div");
   const chips = document.createElement("div");
   chips.className = "tags";
   const input = document.createElement("input");
   input.className = "tag-input";
   input.placeholder = kind === "ai" ? "Add an AI tag" : "Add a tag";
+  input.setAttribute("aria-label", kind === "ai" ? "Add an AI tag" : "Add a tag");
   const list = document.createElement("datalist");
-  list.id = `known-${field}`;
+  list.id = `known-${field}-${++lists}`;
   list.append(...known.map((name) => Object.assign(document.createElement("option"), { value: name })));
   input.setAttribute("list", list.id);
   element.append(chips, input, list);

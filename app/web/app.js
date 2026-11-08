@@ -1,7 +1,8 @@
 // Gallery page. Talks to the server only through the JSON API (/api/...).
 
 import { askAboutDeleted } from "./deleted.js";
-import { initGallery, loadPosts, postsDeletedInNotion } from "./gallery.js";
+import { tagEditor } from "./editor.js";
+import { initGallery, knownTags, loadPosts, postsDeletedInNotion } from "./gallery.js";
 import { anchorBelow, autoPullOn, initMenu } from "./menu.js";
 import { initProcessing, refreshProcessing } from "./processing.js";
 import { initReport, showReport } from "./report.js";
@@ -158,36 +159,58 @@ function serviceRow(name, state, ok) {
   return row;
 }
 
-// Adds a Notion row for the link; the next Sync fetches it.
+// The Add a link panel's Notion tags. The draft outlives closing the panel; the box is rebuilt
+// as the panel opens, so it suggests every tag in use by then.
+const addDraft = { tags: [] };
+let addTags = null;
+
+function showAddTags() {
+  addTags = tagEditor("tags", "notion", addDraft, knownTags().notion, () => addTags.redraw());
+  el("add-tags").replaceChildren(addTags.element);
+}
+
+// Adds a Notion row for the link, with its caption and tags; the next Sync fetches it.
 async function addLink(event) {
   event.preventDefault();
   const input = el("add-url");
   const url = input.value.trim();
   if (!url) return;
+  addTags.addTyped(); // a tag typed but not entered yet
+  const caption = el("add-caption").value.trim();
+  const tags = [...addDraft.tags];
   const send = (force) =>
     fetch("/api/posts", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url, force }),
+      body: JSON.stringify({ url, caption, tags, force }),
     });
-  let response = await send(false);
-  if (response.status === 409) {
-    const { detail } = await response.clone().json();
-    const duplicate = detail?.duplicate;
-    if (duplicate) {
-      const name = duplicate.caption || duplicate.url;
-      if (!confirm(`This link is already saved as "${name}". Add it again anyway?`)) return;
-      response = await send(true);
+  const button = el("add-submit");
+  button.disabled = true; // a second press would add a second row
+  try {
+    let response = await send(false);
+    if (response.status === 409) {
+      const { detail } = await response.clone().json();
+      const duplicate = detail?.duplicate;
+      if (duplicate) {
+        const name = duplicate.caption || duplicate.url;
+        if (!confirm(`This link is already saved as "${name}". Add it again anyway?`)) return;
+        response = await send(true);
+      }
     }
+    if (!response.ok) {
+      toast(await errorText(response), "error");
+      return;
+    }
+    input.value = "";
+    el("add-caption").value = "";
+    addDraft.tags = [];
+    addTags.redraw();
+    el("add-form").hidePopover();
+    setSyncLabel((await response.json()).new);
+    toast("Added to Notion. Press Sync to fetch it.");
+  } finally {
+    button.disabled = false;
   }
-  if (!response.ok) {
-    toast(await errorText(response), "error");
-    return;
-  }
-  input.value = "";
-  el("add-form").hidePopover();
-  setSyncLabel((await response.json()).new);
-  toast("Added to Notion. Press Sync to fetch it.");
 }
 
 // The header stays on screen; date headings stick just below it, and a hairline appears
@@ -203,13 +226,16 @@ function trackHeader() {
 }
 
 anchorBelow(el("add-form"), el("add-button"));
+el("add-form").addEventListener("beforetoggle", (event) => {
+  if (event.newState === "open") showAddTags();
+});
 el("add-form").addEventListener("toggle", (event) => {
   if (event.newState === "open") el("add-url").focus();
 });
 el("add-form").addEventListener("submit", addLink);
 document.addEventListener("vcollect:waiting", (event) => setSyncLabel(event.detail));
-// A row's Retry on the Processing page: the server is processing it now, in a running Sync
-// (which this tab already follows) or in a run of its own.
+// A row's Retry on the Processing page, or a preview's Download video: the server is
+// processing it now, in a running Sync (which this tab already follows) or in a run of its own.
 document.addEventListener("vcollect:retrying", async () => {
   if (!following) followSync(await (await fetch("/api/sync")).json());
 });

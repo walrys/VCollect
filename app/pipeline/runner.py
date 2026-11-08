@@ -1,5 +1,6 @@
 """The Sync job: one run at a time, one post at a time, in the background. A Retry on the
-Processing page joins the running job, or starts one of its own."""
+Processing page, or a preview's Download video, joins the running job, or starts one of its
+own."""
 
 import asyncio
 import logging
@@ -31,6 +32,7 @@ class Cancelled(TryLater):
 class Progress:
     running: bool = False
     retry: bool = False  # started by a Retry: only the rows retried, without a pull
+    video: bool = False  # started by a preview's Download video, without a pull
     total: int = 0
     handled: int = 0
     done: int = 0
@@ -92,6 +94,21 @@ class Syncer:
             self._enqueue(chosen, first=True)
         return chosen
 
+    def download_video(self, post_id: int) -> bool:
+        """Downloads the video of a preview at once: next in the running job, else in a run of
+        its own. Until it lands, every Sync tries again. False when the post is no preview."""
+        with closing(db.connect(self.db_path)) as conn, conn:
+            asked = conn.execute(
+                "UPDATE posts SET want_video = 1"
+                " WHERE id = ? AND kind = 'preview' AND media_ready = 1",
+                (post_id,),
+            ).rowcount
+        if asked and post_id != self._in_hand:
+            if not self.running:
+                self._begin(pull=False, video=True)
+            self._enqueue([post_id], first=True)
+        return bool(asked)
+
     def cancel(self) -> None:
         self._cancelled = True
 
@@ -104,10 +121,12 @@ class Syncer:
         with closing(db.connect(self.db_path)) as conn:
             return {**asdict(self.progress), "new": count_new(conn)}
 
-    def _begin(self, pull: bool) -> None:
+    def _begin(self, pull: bool, video: bool = False) -> None:
         self._cancelled = False
         self._queue = deque()
-        self.progress = Progress(running=True, retry=not pull, started_at=_now())
+        self.progress = Progress(
+            running=True, retry=not (pull or video), video=video, started_at=_now()
+        )
         self._task = asyncio.create_task(self._run(pull))
 
     def _enqueue(self, post_ids: list[int], first: bool = False) -> None:
@@ -130,8 +149,8 @@ class Syncer:
                 self.pipeline.index_links(conn)
                 if pull:
                     waiting = conn.execute(
-                        "SELECT id FROM posts WHERE notion_state = 'synced'"
-                        " AND status = 'Not started' ORDER BY saved_at DESC"
+                        "SELECT id FROM posts WHERE (notion_state = 'synced'"
+                        " AND status = 'Not started') OR want_video = 1 ORDER BY saved_at DESC"
                     ).fetchall()
                     self._enqueue([post_id for (post_id,) in waiting])
                 blocked_sites: dict[str, LoginNeeded] = {}  # site -> the wall met there
@@ -160,9 +179,9 @@ class Syncer:
     ) -> None:
         progress = self.progress
         post = conn.execute(
-            "SELECT url, user_caption FROM posts WHERE id = ?", (post_id,)
+            "SELECT url, user_caption, title FROM posts WHERE id = ?", (post_id,)
         ).fetchone()
-        label = post["user_caption"] or post["url"] or f"Post {post_id}"
+        label = post["user_caption"] or post["title"] or post["url"] or f"Post {post_id}"
         progress.current, progress.step = label, "starting"
         retry_error = ""  # why the post is left for the next Sync, if it is
         needs_login = False  # and whether a session in cookies.txt would solve it

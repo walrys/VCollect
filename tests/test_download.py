@@ -27,7 +27,7 @@ def route(monkeypatch, tmp_path, url, yt_dlp_result):
     """Which downloader handles `url`, given what yt-dlp makes of it."""
     used = []
 
-    def fake_yt_dlp(self, post, dest):
+    def fake_yt_dlp(self, post, dest, preview=False):
         used.append("yt-dlp")
         if isinstance(yt_dlp_result, Exception):
             raise yt_dlp_result
@@ -98,7 +98,7 @@ def download_page(monkeypatch, tmp_path, info, skip_sites=None):
     """Downloads an Instagram post yt-dlp read as `info`; instaloader answers "instaloader"."""
     used = []
 
-    def fake_yt_dlp(self, post, dest):
+    def fake_yt_dlp(self, post, dest, preview=False):
         raise NotASingleVideo(info)
 
     def fake_instaloader(self, post, dest):
@@ -191,7 +191,7 @@ def test_yt_dlp_hands_over_what_it_read_of_image_posts(monkeypatch, tmp_path, in
 def test_yt_dlp_takes_instagrams_single_file(monkeypatch, tmp_path, url, wanted):
     formats = []
 
-    def fake_fetch(self, post, options):
+    def fake_fetch(self, post, options, preview=False):
         formats.append(options["format"])
         raise yt_dlp.utils.DownloadError("ERROR: Video unavailable")
 
@@ -199,6 +199,93 @@ def test_yt_dlp_takes_instagrams_single_file(monkeypatch, tmp_path, url, wanted)
     with pytest.raises(PostFailed):
         Downloader(tmp_path / "cookies.txt")._yt_dlp(normalise(url), tmp_path)
     assert formats == [wanted]
+
+
+@pytest.mark.parametrize(
+    ("url", "video", "preview"),
+    [
+        ("https://youtu.be/dQw4w9WgXcQ", False, True),
+        ("https://youtu.be/dQw4w9WgXcQ", True, False),  # its video, asked for in the gallery
+        ("https://www.instagram.com/reel/AbC/", False, False),
+    ],
+)
+def test_only_youtube_videos_can_be_kept_as_a_preview(monkeypatch, tmp_path, url, video, preview):
+    asked = []
+    monkeypatch.setattr(
+        Downloader, "_yt_dlp", lambda self, post, dest, preview=False: asked.append(preview)
+    )
+    downloader = Downloader(tmp_path / "cookies.txt")
+    asyncio.run(downloader.download(normalise(url), tmp_path / "raw", video=video))
+    assert asked == [preview]
+
+
+def read_youtube(monkeypatch, info: dict) -> list[bool]:
+    """Serves `info` as what yt-dlp reads of a YouTube video; lists, per download, whether
+    the video itself was skipped."""
+    monkeypatch.setattr(yt_dlp.YoutubeDL, "extract_info", lambda self, url, **kwargs: info)
+    skipped = []
+
+    def process(self, result, download=True):
+        skipped.append(bool(self.params.get("skip_download")))
+        return result
+
+    monkeypatch.setattr(yt_dlp.YoutubeDL, "process_ie_result", process)
+    return skipped
+
+
+@pytest.mark.parametrize(
+    ("media_type", "minutes", "kept_as_preview"),
+    [("video", 60, True), ("livestream", 120, True), ("short", 1, False)],
+)
+def test_youtube_videos_but_shorts_are_kept_as_a_preview(
+    monkeypatch, tmp_path, media_type, minutes, kept_as_preview
+):
+    skipped = read_youtube(monkeypatch, {"media_type": media_type, "duration": minutes * 60})
+    # Over MAX_DURATION_MIN, which only applies to a video that is downloaded.
+    downloader = Downloader(tmp_path / "cookies.txt", max_duration_min=10)
+    post = normalise("https://youtu.be/dQw4w9WgXcQ")
+    downloader._yt_dlp_fetch(post, {"quiet": True}, preview=True)
+    assert skipped == [kept_as_preview]
+
+
+def test_a_previews_video_downloads_once_asked_for(monkeypatch, tmp_path):
+    skipped = read_youtube(monkeypatch, {"media_type": "video", "duration": 3600})
+    post = normalise("https://youtu.be/dQw4w9WgXcQ")
+    Downloader(tmp_path / "cookies.txt")._yt_dlp_fetch(post, {"quiet": True})
+    assert skipped == [False]
+
+    read_youtube(monkeypatch, {"media_type": "livestream", "is_live": True})
+    with pytest.raises(TryLater, match="once the stream ends"):
+        Downloader(tmp_path / "cookies.txt")._yt_dlp_fetch(post, {"quiet": True})
+
+
+def test_a_preview_keeps_the_thumbnail_captions_and_details(monkeypatch, tmp_path):
+    def fake_fetch(self, post, options, preview=False):
+        (tmp_path / "01.webp").write_bytes(b"webp")
+        (tmp_path / "01.en.vtt").write_text("WEBVTT\n\n00:00.000 --> 00:01.000\nHello there\n")
+        return {
+            "title": "A talk",
+            "channel": "A channel",
+            "description": "What it is about",
+            "media_type": "video",
+            "duration": 3600,
+        }
+
+    monkeypatch.setattr(Downloader, "_yt_dlp_fetch", fake_fetch)
+    post = normalise("https://youtu.be/dQw4w9WgXcQ")
+    download = Downloader(tmp_path / "cookies.txt")._yt_dlp(post, tmp_path, preview=True)
+
+    assert download == Download(
+        items=[],
+        title="A talk",
+        uploader="A channel",
+        caption="What it is about",
+        subtitles="Hello there",
+        thumbnail="01.webp",
+        preview=True,
+        duration=3600,
+    )
+    assert Download.from_json(download.to_json()) == download
 
 
 def fake_instagram(monkeypatch, post, saved: set[int] | None = None):
@@ -439,7 +526,7 @@ def fetch(tmp_path, url, web, skip_sites=None):
 
 
 def no_yt_dlp(monkeypatch):
-    def refuse(self, post, dest):
+    def refuse(self, post, dest, preview=False):
         raise AssertionError(f"yt-dlp asked for {post.url}")
 
     monkeypatch.setattr(Downloader, "_yt_dlp", refuse)
@@ -475,7 +562,7 @@ def test_a_page_with_nothing_to_read_keeps_its_description(monkeypatch, tmp_path
 
 
 def test_when_yt_dlp_finds_no_video_the_page_is_kept(monkeypatch, tmp_path):
-    def text_tweet(self, post, dest):
+    def text_tweet(self, post, dest, preview=False):
         raise download_module.NoMedia("No video could be found in this tweet")
 
     monkeypatch.setattr(Downloader, "_yt_dlp", text_tweet)

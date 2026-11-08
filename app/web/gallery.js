@@ -2,7 +2,7 @@
 // Every Notion row has a tile: its picture, a title card for a page, or a placeholder until
 // Sync has fetched it.
 
-import { faceFor, STATUS } from "./faces.js";
+import { clock, faceFor, STATUS } from "./faces.js";
 import { openPlayer } from "./player.js";
 import { reducedMotion, Spring } from "./spring.js";
 import { tagChip, tagKey } from "./tags.js";
@@ -100,8 +100,8 @@ function removePost(id, waiting) {
   render();
 }
 
-// Every tag name in use, for the editor's suggestions.
-function knownTags() {
+// Every tag name in use, for the editor's and the Add a link panel's suggestions.
+export function knownTags() {
   const names = (field) =>
     [...new Set(state.posts.flatMap((post) => post[field]))].sort((a, b) => a.localeCompare(b));
   return { notion: names("tags"), ai: names("ai_tags") };
@@ -324,6 +324,11 @@ function tile(post) {
   if (status) badges.append(badge(status.badge, status.tone));
   if (post.items.length > 1) badges.append(badge(`1/${post.items.length}`, "", ICONS.stack));
   else if (post.items[0]?.kind === "image") badges.append(badge("Photo", "", ICONS.photo));
+  else if (post.kind === "preview") {
+    const remote = badge(clock(post.duration) || "Video", "", ICONS.cloud);
+    remote.title = "Not downloaded: a preview";
+    badges.append(remote);
+  }
   if (post.state === "deleted_in_notion") badges.append(badge("Deleted in Notion", "warn"));
   if (post.state === "local_only") badges.append(badge("Not in Notion", "warn"));
   button.append(badges);
@@ -365,6 +370,7 @@ function revealTile(id) {
 const ICONS = {
   stack: '<rect x="3" y="6" width="11" height="11" rx="2"/><path d="M7 3h8a2 2 0 0 1 2 2v8"/>',
   photo: '<rect x="3" y="4" width="14" height="12" rx="2"/><circle cx="8" cy="9" r="1.5"/><path d="m17 13-4-4-7 7"/>',
+  cloud: '<path d="M14.5 8.5h-1A5.5 5.5 0 1 0 7.5 15.5h7a3.5 3.5 0 0 0 0-7Z"/>',
 };
 
 function badge(text, tone = "", icon = "") {

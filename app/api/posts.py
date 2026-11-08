@@ -40,6 +40,8 @@ class PostEdit(BaseModel):
 
 class NewLink(BaseModel):
     url: str
+    caption: str = ""  # the user's note
+    tags: list[str] = []  # Notion tags, brand-new ones included
     force: bool = False  # add it even though the link is already saved
 
 
@@ -91,6 +93,24 @@ async def cookies(post_id: int, request: Request) -> dict:
     except PostFailed as error:
         raise HTTPException(422, str(error)) from error
     return cookie_status(request.app.state.settings.cookies_path, url)
+
+
+@router.post("/posts/{post_id}/video")
+async def download_video(post_id: int, request: Request) -> dict:
+    """Downloads the video of a preview (a YouTube video Sync saved only the thumbnail of) at
+    once: next in a running Sync, else in a run of its own. The post keeps its summary and
+    tags; it becomes a media post when the video lands."""
+    syncer = request.app.state.syncer
+    if syncer is None:
+        raise HTTPException(
+            409, "Notion is not configured: set NOTION_TOKEN and NOTION_DATA_SOURCE_ID."
+        )
+    with closing(_connect(request)) as conn:
+        _post_or_404(conn, post_id)
+    if not syncer.download_video(post_id):
+        raise HTTPException(409, "Only a video saved as a preview can be downloaded.")
+    with closing(_connect(request)) as conn:
+        return {"post": _load(conn, "posts.id = ?", (post_id,))[0]}
 
 
 @router.patch("/posts/{post_id}")
@@ -202,7 +222,8 @@ async def readd(post_id: int, request: Request) -> dict:
 
 @router.post("/posts", status_code=201)
 async def add_link(link: NewLink, request: Request) -> dict:
-    """Adds a row for the link to Notion; the next Sync processes it."""
+    """Adds a row for the link to Notion, with its caption and Notion tags; the next Sync
+    processes it."""
     mirror = request.app.state.mirror
     if mirror is None:
         raise HTTPException(
@@ -212,6 +233,7 @@ async def add_link(link: NewLink, request: Request) -> dict:
         canonical = normalise(link.url).url
     except PostFailed as error:
         raise HTTPException(422, str(error)) from error
+    tags = _clean_tags(link.tags, lower=False)
 
     with closing(_connect(request)) as conn:
         index_links(conn)
@@ -234,7 +256,7 @@ async def add_link(link: NewLink, request: Request) -> dict:
         )
 
     try:
-        post_id = await mirror.create_row(link.url.strip())
+        post_id = await mirror.create_row(link.url.strip(), link.caption.strip(), tags)
     except (SchemaError, NotionError, HTTPError) as error:
         raise HTTPException(502, f"Could not add the row to Notion: {error}") from error
     with closing(_connect(request)) as conn:
@@ -322,7 +344,7 @@ def _load(conn: sqlite3.Connection, where: str, params: tuple = ()) -> list[dict
     posts = conn.execute(
         "SELECT id, title, user_caption, uploader, platform_caption, url, notion_url, saved_at,"
         " summary, thumb_file, notion_state, status, error, retry_error, needs_login,"
-        f" media_ready, kind, page_file FROM posts WHERE {where}"
+        f" media_ready, kind, page_file, duration, want_video FROM posts WHERE {where}"
         " ORDER BY saved_at DESC, id DESC",
         params,
     ).fetchall()
@@ -363,13 +385,17 @@ def _load(conn: sqlite3.Connection, where: str, params: tuple = ()) -> list[dict
             "saved_at": post["saved_at"],
             "summary": post["summary"],
             # media: a tile from its video or image; page: a title card, with a readable copy
-            # (`page`) unless it needs JavaScript; placeholder: nothing fetched yet.
+            # (`page`) unless it needs JavaScript; preview: a video left on its site, shown by
+            # its thumbnail until downloaded; placeholder: nothing fetched yet.
             "kind": post["kind"] if post["media_ready"] else "placeholder",
             "status": _status(post),
             "reason": post["error"] if post["status"] == "Failed" else post["retry_error"],
             "thumb": f"/media/{post['thumb_file']}" if post["thumb_file"] else None,
             "page": f"/api/posts/{post['id']}/page" if post["page_file"] else None,
             "description": post["platform_caption"] if post["kind"] == "page" else "",
+            "duration": post["duration"],  # a preview's length, in seconds
+            # A preview's video was asked for: it downloads now, or with the next Sync.
+            "video_wanted": bool(post["want_video"]),
             "state": post["notion_state"],
             "tags": tags[post["id"]]["notion"],
             "ai_tags": tags[post["id"]]["ai"],

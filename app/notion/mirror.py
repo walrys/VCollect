@@ -69,13 +69,21 @@ class Mirror:
             with closing(db.connect(self.db_path)) as conn:
                 return await self._push_post(conn, post_id)
 
-    async def create_row(self, url: str) -> int:
-        """Adds a row for `url` to the Notion database; returns the new post's id."""
+    async def create_row(self, url: str, caption: str = "", tags: list[str] = ()) -> int:
+        """Adds a row for `url` to the Notion database, with the user's caption and Notion
+        tags when given; returns the new post's id."""
         async with self._lock:
             await self._ensure_schema()
-            page = await self.client.create_page(
-                {self.props.url: values.url(url), self.props.status: values.status("Not started")}
-            )
+            properties = {
+                self.props.url: values.url(url),
+                self.props.status: values.status("Not started"),
+            }
+            if caption:
+                kind = values.title if self._caption_kind == "title" else values.rich_text
+                properties[self.props.caption] = kind(caption)
+            if tags:
+                properties[self.props.tags] = values.multi_select(list(tags))
+            page = await self.client.create_page(properties)
             with closing(db.connect(self.db_path)) as conn, conn:
                 return upsert_row(conn, parse_page(page, self.props))
 

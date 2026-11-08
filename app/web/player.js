@@ -1,13 +1,15 @@
 // The pop-up player: one post, its items, and the filtered posts either side of it.
 // Left/right (arrows, swipe or the side buttons) step through a post's items, then on
 // into the neighbouring post. Edit and Delete act on the post shown. A page shows its
-// readable copy, scrolling; a placeholder shows why it waits, with Retry.
+// readable copy, scrolling; a placeholder shows why it waits, with Sync (Retry once a Sync
+// has tried it); a preview (a YouTube video left on YouTube) shows its thumbnail, with
+// Download video.
 // It grows out of the tile that opened it and shrinks back into the tile of the post it
 // closes on. On a touch screen the media follows the finger: sideways to page, down to close,
 // and anything in motion can be caught and thrown again.
 
 import { renderEditor } from "./editor.js";
-import { faceFor, hostname, openLabel, STATUS } from "./faces.js";
+import { clock, faceFor, hostname, openLabel, STATUS } from "./faces.js";
 import { project, reducedMotion, rubberband, Spring, VelocityTracker } from "./spring.js";
 import { tagChip, tagKey } from "./tags.js";
 import { errorText, toast } from "./toast.js";
@@ -236,7 +238,7 @@ function showMedia() {
   el("player-next").disabled = !neighbour(1);
   el("player-count").textContent =
     post.items.length > 1 ? `${itemIndex + 1} / ${post.items.length}` : "";
-  sheet.classList.toggle("is-page", post.kind !== "media");
+  sheet.classList.toggle("is-page", post.kind !== "media" && post.kind !== "preview");
 }
 
 function slot(at, offset) {
@@ -256,6 +258,13 @@ function media(post, index, live) {
     face.classList.add("slot-face");
     face.style.setProperty("--ratio", 9 / 16);
     return face;
+  }
+  if (post.kind === "preview") {
+    const still = document.createElement("img");
+    still.src = post.thumb;
+    still.alt = live ? post.caption || post.title || "" : "";
+    still.style.setProperty("--ratio", 16 / 9); // YouTube's thumbnails
+    return still;
   }
   const item = post.items[index];
   let node;
@@ -351,13 +360,16 @@ function showInfo() {
 
   el("player-title").textContent =
     post.title || post.caption || hostname(post.url) || "Saved link";
+  const preview = post.kind === "preview";
   const saved = new Date(post.saved_at).toLocaleDateString(undefined, { dateStyle: "medium" });
-  el("player-meta").textContent = [post.uploader, `Saved ${saved}`].filter(Boolean).join(" · ");
+  el("player-meta").textContent = [post.uploader, preview && clock(post.duration), `Saved ${saved}`]
+    .filter(Boolean)
+    .join(" · ");
   el("player-summary").textContent = post.summary || "Summary on its way.";
   el("player-summary").classList.toggle("pending", !post.summary);
   el("player-summary").hidden = waiting;
 
-  const status = waiting && STATUS[post.status];
+  const status = waiting ? STATUS[post.status] : preview && previewStatus(post);
   el("player-status").hidden = !status;
   if (status) {
     const label = document.createElement("strong");
@@ -365,7 +377,12 @@ function showInfo() {
     el("player-status").replaceChildren(label, post.reason || status.note);
     el("player-status").className = `player-status ${status.tone}`.trim();
   }
-  el("player-retry").hidden = !waiting || post.state !== "synced";
+  // A link no Sync has tried yet is fetched ("Sync"); once one has, it is tried again ("Retry").
+  const retryButton = el("player-retry");
+  retryButton.hidden = !waiting || post.state !== "synced";
+  retryButton.textContent = post.status === "new" ? "Sync" : "Retry";
+  retryButton.title = post.status === "new" ? "Fetch this link now" : "Try this link again now";
+  el("player-video").hidden = !preview;
   showCookies(post);
   showInlinePage(post);
   // The caption is the user's own note; skip it when it is already the title.
@@ -398,6 +415,17 @@ function showInfo() {
   el("player-notion").href = post.notion_url;
   el("player-notion").hidden = !post.notion_url;
   sheet.querySelector(".player-info").scrollTop = 0;
+}
+
+// Why a preview has no video, or how the video asked for is getting on (its reason: why the
+// last try left it for the next Sync).
+function previewStatus(post) {
+  if (!post.video_wanted) {
+    const note = "Sync keeps a preview of YouTube videos other than Shorts.";
+    return { badge: "Not downloaded", tone: "", note };
+  }
+  if (post.reason) return { badge: "Video waiting", tone: "warn", note: "" };
+  return { badge: "Video asked for", tone: "", note: "It downloads now, or with the next Sync." };
 }
 
 // Whether cookies.txt has a session for the site, read from the file: the site is not asked.
@@ -436,11 +464,12 @@ function showInlinePage(post) {
   });
 }
 
-// Processes the row at once, as the Processing page's Retry does; the header shows progress,
-// and the post updates here when it lands.
+// Processes the row at once, as the Processing page's Retry does (labelled Sync while no Sync
+// has tried it); the header shows progress, and the post updates here when it lands.
 async function retry() {
   const button = el("player-retry");
   const post = posts[postIndex];
+  const verb = post.status === "new" ? "sync" : "retry";
   button.disabled = true;
   try {
     const response = await fetch("/api/processing/retry", {
@@ -455,10 +484,34 @@ async function retry() {
     const result = await response.json();
     document.dispatchEvent(new CustomEvent("vcollect:waiting", { detail: result.new }));
     if (!result.reset.length) {
-      toast("Nothing to retry: it is being processed now, or already done.");
+      toast(`Nothing to ${verb}: it is being processed now, or already done.`);
       return;
     }
-    toast("Retrying now");
+    toast(verb === "sync" ? "Syncing now" : "Retrying now");
+    document.dispatchEvent(new CustomEvent("vcollect:retrying"));
+  } finally {
+    button.disabled = false;
+  }
+}
+
+// Downloads a preview's video at once, next if a Sync is running; the header shows progress,
+// and the post turns into its video here when it lands. The summary and tags stay.
+async function downloadVideo() {
+  const button = el("player-video");
+  const post = posts[postIndex];
+  button.disabled = true;
+  try {
+    const response = await fetch(`/api/posts/${post.id}/video`, { method: "POST" });
+    if (!response.ok) {
+      toast(await errorText(response), "error");
+      return;
+    }
+    const result = await response.json();
+    const index = posts.findIndex((p) => p.id === post.id);
+    if (index >= 0) posts[index] = result.post;
+    handlers.onChange(result.post);
+    if (index === postIndex && !editing) showInfo();
+    toast("Downloading the video");
     document.dispatchEvent(new CustomEvent("vcollect:retrying"));
   } finally {
     button.disabled = false;
@@ -670,6 +723,7 @@ el("player-edit").addEventListener("click", () => {
 el("player-delete").addEventListener("click", remove);
 el("player-readd").addEventListener("click", readd);
 el("player-retry").addEventListener("click", retry);
+el("player-video").addEventListener("click", downloadVideo);
 // Escape closes the same way as the close button, shrinking back into the tile.
 dialog.addEventListener("cancel", (event) => {
   event.preventDefault();

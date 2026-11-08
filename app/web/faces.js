@@ -31,6 +31,15 @@ export function hostname(url) {
   }
 }
 
+/** A length in seconds as "4:05" or "1:02:03"; "" when unknown. */
+export function clock(seconds) {
+  if (!seconds) return "";
+  const whole = Math.round(seconds);
+  const [h, m, s] = [Math.floor(whole / 3600), Math.floor(whole / 60) % 60, whole % 60];
+  const pad = (n) => String(n).padStart(2, "0");
+  return h ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
+}
+
 /** "Open on Reddit", or "Open link" for a site without a name here. */
 export function openLabel(platform) {
   return SITE_NAMES[platform] ? `Open on ${SITE_NAMES[platform]}` : "Open link";

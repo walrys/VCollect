@@ -37,7 +37,7 @@ export function showReport(progress) {
     el(`report-${name}`).textContent = count;
     el(`report-${name}`).parentElement.classList.toggle("none", count === 0);
   }
-  el("report-title").textContent = progress.retry ? "Last retry" : "Last Sync";
+  el("report-title").textContent = runName(progress);
   const ended = new Date(progress.finished_at);
   el("report-time").dateTime = progress.finished_at;
   el("report-time").textContent = when(ended);
@@ -55,6 +55,12 @@ export function showReport(progress) {
   else showPip();
 }
 
+// What started the run: Sync, a Retry, or a preview's Download video.
+function runName(progress) {
+  if (progress.video) return "Last download";
+  return progress.retry ? "Last retry" : "Last Sync";
+}
+
 // Problems worth a look: a Cancel the user pressed is not one.
 function hasProblems(progress) {
   const stopped = progress.stopped && progress.stopped !== "Cancelled";
@@ -65,7 +71,7 @@ function showPip() {
   const unread = shown !== null && hasProblems(shown) && seen !== shown.finished_at;
   const button = el("report-button");
   button.classList.toggle("unread", unread);
-  const label = shown?.retry ? "Last retry" : "Last Sync";
+  const label = shown ? runName(shown) : "Last Sync";
   button.setAttribute("aria-label", unread ? `${label}: new problems` : label);
   button.title = button.getAttribute("aria-label");
 }
