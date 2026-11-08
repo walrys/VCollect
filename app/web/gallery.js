@@ -4,10 +4,10 @@
 
 import { faceFor, STATUS } from "./faces.js";
 import { openPlayer } from "./player.js";
+import { reducedMotion, Spring } from "./spring.js";
 import { tagChip, tagKey } from "./tags.js";
 
 const el = (id) => document.getElementById(id);
-const TOP_TAGS = 20;
 const SEARCH_DELAY_MS = 300;
 const KINDS = { notion: "tags", ai: "ai_tags" }; // tag kind -> post field
 
@@ -17,7 +17,7 @@ const state = {
   selected: new Set(), // tag keys: "notion:<name>" or "ai:<name>", lower-cased
   searchIds: null, // Set of matching post ids, or null with an empty search box
   grouped: false,
-  expanded: { notion: false, ai: false },
+  tagsOpen: false, // every tag, or one line of each kind
 };
 
 export function initGallery() {
@@ -44,6 +44,9 @@ export function initGallery() {
     event.preventDefault();
     el("search").focus();
   });
+  el("tags-toggle").addEventListener("click", () => setTagsOpen(!state.tagsOpen));
+  // A new width, or the gallery shown again after the Processing page: measured afresh.
+  new ResizeObserver(fitTags).observe(el("tag-bar"));
   el("clear-filters").addEventListener("click", () => {
     state.selected.clear();
     el("search").value = "";
@@ -169,10 +172,9 @@ function renderTags(visible) {
         b.count - a.count ||
         a.name.localeCompare(b.name),
     );
-    const shown = state.expanded[kind] ? sorted : sorted.slice(0, TOP_TAGS);
     const row = el(`tags-${kind}`);
     row.replaceChildren(
-      ...shown.map(([key, { name, count }]) =>
+      ...sorted.map(([key, { name, count }]) =>
         tagChip(kind, name, {
           count,
           selected: state.selected.has(key),
@@ -184,20 +186,72 @@ function renderTags(visible) {
         }),
       ),
     );
-    if (sorted.length > TOP_TAGS) {
-      const more = document.createElement("button");
-      more.type = "button";
-      more.className = "chip tag-more";
-      more.textContent = state.expanded[kind] ? "Show fewer" : `Show all ${sorted.length}`;
-      more.addEventListener("click", () => {
-        state.expanded[kind] = !state.expanded[kind];
-        render();
-      });
-      row.append(more);
-    }
-    row.classList.toggle("expanded", state.expanded[kind]);
+    row.scrollLeft = 0; // a tag just picked moves to the front
     row.hidden = sorted.length === 0;
   }
+  fitTags();
+}
+
+// Closed, each kind of tag is one line, scrolled sideways, its end fading out; the toggle
+// unrolls every line. It shows only when some line holds less than every tag.
+function fitTags() {
+  if ([...tagSprings.values()].some((spring) => spring.moving)) return; // once it settles
+  let more = false;
+  for (const row of tagRows()) {
+    const first = row.firstElementChild.getBoundingClientRect();
+    const last = row.lastElementChild.getBoundingClientRect();
+    // The room a wrapping row has: the fade's padding at the end is not part of it.
+    const room = row.clientWidth - parseFloat(getComputedStyle(row).paddingLeft);
+    const over = state.tagsOpen ? last.top > first.top : last.right - first.left > room + 0.5;
+    row.classList.toggle("overflowing", over && !state.tagsOpen);
+    more ||= over;
+  }
+  el("tags-toggle").hidden = !more;
+}
+
+function tagRows() {
+  return [el("tags-notion"), el("tags-ai")].filter((row) => !row.hidden && row.firstElementChild);
+}
+
+const tagSprings = new Map(); // tag row -> a spring on its height
+
+// Each row's height springs between one line and all of them, from the height on screen, so
+// a second tap mid-way turns it straight round. Rows stay wrapped and clipped while moving.
+function setTagsOpen(open) {
+  state.tagsOpen = open;
+  el("tags-toggle").setAttribute("aria-expanded", String(open));
+  el("tags-toggle-label").textContent = open ? "Show less" : "Show all";
+  const bar = el("tag-bar");
+  const rows = tagRows();
+  const from = rows.map((row) => row.getBoundingClientRect().height);
+  bar.classList.toggle("open", open);
+  if (reducedMotion.matches) {
+    fitTags();
+    return;
+  }
+  bar.classList.add("moving");
+  const runs = rows.map((row, index) => {
+    let spring = tagSprings.get(row);
+    if (!spring) {
+      spring = new Spring(from[index], (height) => {
+        row.style.height = `${height}px`;
+      });
+      tagSprings.set(row, spring);
+    }
+    if (!spring.moving) spring.set(from[index]);
+    return spring.to(open ? row.scrollHeight : oneLine(row), { response: 0.4, damping: 1 });
+  });
+  Promise.all(runs).then((settled) => {
+    if (!settled.every(Boolean)) return; // turned round: that run tidies up
+    bar.classList.remove("moving");
+    for (const row of rows) row.style.height = "";
+    fitTags();
+  });
+}
+
+function oneLine(row) {
+  const { paddingTop, paddingBottom } = getComputedStyle(row);
+  return row.firstElementChild.offsetHeight + parseFloat(paddingTop) + parseFloat(paddingBottom);
 }
 
 // Tiles are kept between renders, so a filter change moves them instead of reloading images.

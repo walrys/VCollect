@@ -110,12 +110,12 @@ The web page talks to the server only through the JSON API (`/api/posts`, `/api/
 ### Gallery details
 - **Header**: stays on screen as a translucent bar holding the wordmark, the search bar, a **+** button whose panel adds a URL by creating a Notion row (warns on duplicates), and the menu. `/` focuses search.
 - **Search**: server-side, debounced, keyword FTS5 with prefix matching over title, user caption, platform caption, summary, transcript, uploader, both kinds of tags, the readable copy and the words of the link ("reddit", "gamedev"). Results keep timeline order and combine with selected tags as AND.
-- **Tag bar**: Notion tags as filled chips; AI tags in a second row as outlined chips. Top ~20 plus "show all"; on a phone each row is one line that scrolls sideways. Filtering is instant (client-side) and AND across tags. Once tags are selected, the bar shows only tags present in the current results, with counts, and a "12 of 162 posts · Clear" line appears.
+- **Tag bar**: Notion tags as filled chips; AI tags in a second row as outlined chips. Each row is one line that scrolls sideways and fades at its end; one "Show all" toggle at the end of the first line springs both rows open to every tag (and back), shown only when a line holds less than every tag. Filtering is instant (client-side) and AND across tags. Once tags are selected, the bar shows only tags present in the current results, with counts, and a "12 of 162 posts · Clear" line appears.
 - **Grid**: one 9:16 tile per post (landscape centre-cropped), ordered by saved date, static thumbnails, a "1/5" badge on carousels and an icon on image posts. A page gets a **title card**: its title, large, over the site's logo and domain. A **placeholder** shows the site's logo over the user's caption on the site's tint, with a badge: New, Needs login, Waiting or Failed. Both are drawn in the browser (`faces.js`, logos in `web/logos/`: Simple Icons, CC0), so they follow the theme.
 - **Group by date**: buckets are exclusive, first match wins: Today, Yesterday, This Week (weeks start Monday), Last Week, then one heading per month ("October 2026"). Empty groups are hidden. Grouping runs in the browser, in its local time. The checkbox state is remembered per browser.
 - **Pop-up player**: plays local media. It grows out of the tapped tile and shrinks back into the tile of the post it closes on. Swipe (the media follows the finger) or arrow keys move through a post's items and through the filtered posts; pull down, Escape or Back closes it. Motion uses springs and falls back to cross-fades under reduced motion. Edits Notion tags, caption, summary, AI tags; promotes an AI tag to a Notion tag; deletes; links to the original ("Open on Reddit"). A page's readable copy fills the media area and scrolls (the browser scrolls it natively; at its top, pulling down closes); a post with media and a copy (a Reddit video) shows the copy in the side panel. A placeholder shows why it waits, the cookie line, and Retry (as on the Processing page); it updates in place when the post lands.
 - **Processing page** (`#processing`, linked from the ☰ panel and the last-Sync report): every row Sync has not finished, newest saved first, in three groups: Failed (Notion's `Error`, with Retry and Retry all), To retry (why the last Sync left it, with Retry) and New. It shares the header, so Sync and the progress bar stay in reach, and refreshes as a Sync works through rows.
-- **Menu**: the Sync button (or progress bar), then a ☰ panel with the Processing link, group-by-date, the auto-pull toggle and disk usage against `DISK_CAP_GB`.
+- **Menu**: the Sync button (or progress bar); an ⓘ button holding the last Sync's report (counts, problems, a link to Processing), with a red pip while a report with problems is unread in this browser; then a ☰ panel with the Processing link, group-by-date, the auto-pull toggle and disk usage against `DISK_CAP_GB`.
 - Responsive for phone browsers over Tailscale; follows the system dark/light theme.
 
 ## Directory layout
@@ -130,9 +130,10 @@ app/                     FastAPI package
   web/                   static page, ES modules, no build: app.js (Sync, Add link, services), gallery.js
                          (grid, tag bar, search, date groups), faces.js (title cards, placeholders),
                          logos/, player.js, editor.js (edit mode),
-                         menu.js (☰ panel), deleted.js (deleted-in-Notion dialog),
-                         processing.js (#processing page), tags.js, toast.js, spring.js (springs and
-                         gesture helpers for the player's motion), app.css
+                         menu.js (☰ panel), report.js (ⓘ last-Sync report), deleted.js
+                         (deleted-in-Notion dialog), processing.js (#processing page), tags.js,
+                         toast.js, spring.js (springs and gesture helpers for the player's and the
+                         tag bar's motion), app.css
   notion/                client, schema check, pull; mirror.py runs every Notion conversation
                          (pull, push, create, trash) under one lock
   pipeline/              Sync: urls, download (routes every link), pages (readable copies), reddit,

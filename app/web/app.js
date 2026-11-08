@@ -4,6 +4,7 @@ import { askAboutDeleted } from "./deleted.js";
 import { initGallery, loadPosts, postsDeletedInNotion } from "./gallery.js";
 import { anchorBelow, autoPullOn, initMenu } from "./menu.js";
 import { initProcessing, refreshProcessing } from "./processing.js";
+import { initReport, showReport } from "./report.js";
 import { errorText, toast } from "./toast.js";
 
 const el = (id) => document.getElementById(id);
@@ -34,7 +35,10 @@ function setSyncLabel(waiting) {
   if (!waiting) return;
   const count = document.createElement("span");
   count.className = "count";
-  count.textContent = `${waiting} new`;
+  const word = document.createElement("span");
+  word.className = "count-word"; // dropped on a narrow phone, where the number says enough
+  word.textContent = " new";
+  count.append(String(waiting), word);
   button.append(count);
   button.setAttribute("aria-label", `Sync (${waiting} new)`);
 }
@@ -118,22 +122,6 @@ function showProgress(progress) {
   el("sync").disabled = false;
   setSyncLabel(progress.new);
   if (progress.finished_at) showReport(progress);
-}
-
-function showReport(progress) {
-  const parts = [`${progress.done} done`, `${progress.failed} failed`, `${progress.later} to retry`];
-  const ended = new Date(progress.finished_at).toLocaleTimeString();
-  el("report-summary").textContent =
-    `Last ${progress.retry ? "retry" : "Sync"} (${ended}): ${parts.join(" · ")}` +
-    (progress.stopped ? ` · ${progress.stopped}` : "");
-  el("report-problems").replaceChildren(
-    ...progress.problems.map((problem) => {
-      const row = document.createElement("li");
-      row.textContent = problem;
-      return row;
-    }),
-  );
-  el("report").hidden = false;
 }
 
 async function showServices() {
@@ -233,6 +221,7 @@ setInterval(refresh, REFRESH_MS);
 trackHeader();
 initGallery();
 initMenu();
+initReport();
 initProcessing();
 loadPosts();
 

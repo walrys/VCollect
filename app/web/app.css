@@ -663,6 +663,162 @@ svg {
   text-overflow: ellipsis;
 }
 
+/* ----- The last Sync's report, behind the info button beside Sync ----- */
+
+.report-button {
+  position: relative;
+}
+
+.report-button .info-dot {
+  stroke-width: 2.5;
+}
+
+/* Problems not yet read. Cut out of the button by a ring of the page colour, as on iOS. */
+.pip {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--danger-fill);
+  box-shadow: 0 0 0 2px var(--bg);
+  opacity: 0;
+  transform: scale(0);
+  transition: transform 0.2s ease, opacity 0.2s ease;
+}
+
+.report-button.unread .pip {
+  opacity: 1;
+  transform: none;
+  transition: transform 0.45s cubic-bezier(0.34, 1.4, 0.64, 1), opacity 0.1s ease;
+}
+
+.report-panel:popover-open {
+  display: flex;
+  flex-direction: column;
+  width: min(360px, calc(100vw - 16px));
+  max-height: calc(100dvh - var(--header-h) - 16px);
+  padding: 14px 0 6px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.report-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 16px;
+}
+
+.report-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 1.0625rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  line-height: 1.25;
+}
+
+.report-time {
+  color: var(--muted);
+  font-size: 0.8125rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.report-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  padding: 12px 16px 0;
+}
+
+.report-stat {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--fill);
+}
+
+.report-stat strong {
+  font-family: var(--font-display);
+  font-size: 1.25rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+  font-variant-numeric: tabular-nums;
+}
+
+.report-stat span {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.report-stat.done strong {
+  color: var(--ok);
+}
+
+.report-stat.failed strong {
+  color: var(--danger);
+}
+
+.report-stat.later strong {
+  color: var(--warn);
+}
+
+.report-stat.none strong {
+  color: var(--faint);
+}
+
+.report-stopped {
+  margin: 12px 16px 0;
+  color: var(--warn);
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+
+.report-problems {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.8125rem;
+  line-height: 1.4;
+}
+
+.report-problems li {
+  position: relative;
+  padding: 9px 16px 9px 32px;
+}
+
+.report-problems li::before {
+  content: "";
+  position: absolute;
+  top: calc(9px + 0.7em - 3px);
+  left: 16px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--warn);
+}
+
+/* Separators inset to the text, as in a grouped list. */
+.report-problems li + li::after {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 32px;
+  height: 1px;
+  background: var(--separator);
+}
+
+.report-panel .menu-group {
+  margin-top: 8px;
+  padding-bottom: 0;
+  border-top: 1px solid var(--separator);
+}
+
 /* ----- Gallery ----- */
 
 .page {
@@ -672,11 +828,87 @@ svg {
     max(16px, env(safe-area-inset-left));
 }
 
+/* One line of each kind of tag until the toggle unrolls them all. */
 .tag-bar {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
   gap: 8px;
   margin: 4px 0 16px;
+}
+
+.tag-row {
+  grid-column: 1;
+  /* Room for a chip's focus ring, which a scrolled or clipped row would cut off. */
+  margin-block: -5px;
+  padding-block: 5px;
+}
+
+.tag-bar:not(.open, .moving) .tag-row {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+}
+
+.tag-bar:not(.open, .moving) .tag-row::-webkit-scrollbar {
+  display: none;
+}
+
+/* The tags past the end fade out under it, so the line reads as going on; the padding lets the
+   last one scroll clear of the fade. */
+.tag-bar:not(.open, .moving) .tag-row.overflowing {
+  padding-right: 40px;
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 40px), transparent);
+  mask-image: linear-gradient(to right, #000 calc(100% - 40px), transparent);
+}
+
+/* While the height springs, the rows wrap and the lines past it are clipped. */
+.tag-bar.moving .tag-row {
+  overflow: hidden;
+}
+
+/* At the end of the first row, where it stays while the rows open and close below it. */
+.tags-toggle {
+  grid-row: 1;
+  grid-column: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 30px;
+  padding: 0 6px 0 10px;
+  border: 0;
+  border-radius: 999px;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: transform 0.12s ease-out, background-color 0.15s ease;
+}
+
+@media (hover: hover) {
+  .tags-toggle:hover {
+    background: var(--fill);
+  }
+}
+
+.tags-toggle:active {
+  transform: scale(0.96);
+  transition-duration: 0.06s;
+}
+
+.tags-toggle-chevron {
+  width: 16px;
+  height: 16px;
+  stroke-width: 2.25;
+  transition: transform 0.4s var(--ease-out);
+}
+
+.tags-toggle[aria-expanded="true"] .tags-toggle-chevron {
+  transform: rotate(180deg);
 }
 
 .tags {
@@ -684,10 +916,6 @@ svg {
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
-}
-
-.tag-bar .tags {
-  margin: 0;
 }
 
 .chip {
@@ -743,16 +971,6 @@ button.chip.selected:hover {
   opacity: 0.6;
 }
 
-.tag-more {
-  background: transparent;
-  color: var(--accent);
-}
-
-/* Show all: the row unrolls into the full set. */
-.tag-row.expanded {
-  flex-wrap: wrap;
-}
-
 .results {
   display: flex;
   align-items: baseline;
@@ -761,54 +979,6 @@ button.chip.selected:hover {
   color: var(--muted);
   font-size: 0.875rem;
   font-variant-numeric: tabular-nums;
-}
-
-.report {
-  margin: 0 0 16px;
-  border-radius: var(--radius);
-  background: var(--grouped);
-  font-size: 0.875rem;
-}
-
-.report summary {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 14px;
-  list-style: none;
-  cursor: pointer;
-}
-
-.report summary::-webkit-details-marker {
-  display: none;
-}
-
-.report summary::before {
-  content: "";
-  width: 7px;
-  height: 7px;
-  border-right: 2px solid var(--faint);
-  border-bottom: 2px solid var(--faint);
-  transform: rotate(-45deg);
-  transition: transform 0.25s var(--ease-out);
-}
-
-.report[open] summary::before {
-  transform: rotate(45deg);
-}
-
-.report ul {
-  margin: 0;
-  padding: 0 14px 0 36px;
-  color: var(--muted);
-}
-
-.report-link {
-  display: inline-block;
-  margin: 8px 14px 12px;
-  color: var(--accent);
-  font-size: 0.8125rem;
-  text-decoration: none;
 }
 
 /* Date headings stay in view under the bar: where in the timeline you are. */
@@ -2284,19 +2454,10 @@ a.stage-row-name:hover {
 }
 
 @media (max-width: 520px) {
-  /* One line of tags each, swiped sideways; the grid starts on the first screen. */
-  .tag-row:not(.expanded) {
-    flex-wrap: nowrap;
-    margin: 0 -12px;
-    padding: 0 40px 0 12px;
-    overflow-x: auto;
-    scrollbar-width: none;
-    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 40px), transparent);
-    mask-image: linear-gradient(to right, #000 calc(100% - 40px), transparent);
-  }
-
-  .tag-row::-webkit-scrollbar {
-    display: none;
+  /* The tags scroll in from the edge of the screen. */
+  .tag-row {
+    margin-left: -12px;
+    padding-left: 12px;
   }
 
   .tiles {
@@ -2325,6 +2486,30 @@ a.stage-row-name:hover {
     padding-right: 12px;
     padding-left: 12px;
     font-size: 1.25rem;
+  }
+}
+
+/* A narrow phone: the wordmark and four buttons share one line. */
+@media (max-width: 420px) {
+  .topbar {
+    column-gap: 12px;
+  }
+
+  .wordmark {
+    font-size: 1rem;
+    letter-spacing: 0.1em;
+  }
+
+  .menu {
+    gap: 6px;
+  }
+
+  .sync-button {
+    padding: 0 12px;
+  }
+
+  .count-word {
+    display: none;
   }
 }
 

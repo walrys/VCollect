@@ -44,6 +44,33 @@
         </div>
         <p id="progress-label" class="progress-label"></p>
       </div>
+      <button id="report-button" class="icon-button report-button" type="button"
+              popovertarget="report-panel" aria-label="Last Sync" title="Last Sync" hidden>
+        <svg viewBox="0 0 20 20" aria-hidden="true">
+          <circle cx="10" cy="10" r="7.25" /><path d="M10 9.25v4.5" />
+          <path class="info-dot" d="M10 6.4v.01" />
+        </svg>
+        <span class="pip" aria-hidden="true"></span>
+      </button>
+      <div id="report-panel" class="popover-panel report-panel" popover>
+        <div class="report-head">
+          <h2 id="report-title" class="report-title">Last Sync</h2>
+          <time id="report-time" class="report-time"></time>
+        </div>
+        <div class="report-stats">
+          <p class="report-stat done"><strong id="report-done"></strong><span>done</span></p>
+          <p class="report-stat failed"><strong id="report-failed"></strong><span>failed</span></p>
+          <p class="report-stat later"><strong id="report-later"></strong><span>to retry</span></p>
+        </div>
+        <p id="report-stopped" class="report-stopped" hidden></p>
+        <ul id="report-problems" class="report-problems"></ul>
+        <div class="menu-group">
+          <a class="menu-row" href="#processing">
+            <span>Processing</span>
+            <svg class="chevron" viewBox="0 0 20 20" aria-hidden="true"><path d="m8 5 5 5-5 5" /></svg>
+          </a>
+        </div>
+      </div>
       <button id="menu-button" class="icon-button" type="button" popovertarget="menu-panel"
               aria-label="Menu" title="Menu">
         <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3.5 6h13M3.5 10h13M3.5 14h13" /></svg>
@@ -78,7 +105,15 @@
   </header>
 
   <main id="gallery" class="page">
-    <div class="tag-bar">
+    <div id="tag-bar" class="tag-bar">
+      <!-- First, so it is reached before a long run of chips; drawn at the end of the first row. -->
+      <button id="tags-toggle" class="tags-toggle" type="button" aria-expanded="false"
+              aria-controls="tags-notion tags-ai" hidden>
+        <span id="tags-toggle-label">Show all</span>
+        <svg class="tags-toggle-chevron" viewBox="0 0 20 20" aria-hidden="true">
+          <path d="m6 8 4 4 4-4" />
+        </svg>
+      </button>
       <div id="tags-notion" class="tags tag-row" aria-label="Tags"></div>
       <div id="tags-ai" class="tags tag-row" aria-label="AI tags"></div>
     </div>
@@ -86,11 +121,6 @@
       <span id="results-count"></span>
       <button id="clear-filters" class="link-button" type="button">Clear</button>
     </div>
-    <details id="report" class="report" hidden>
-      <summary id="report-summary"></summary>
-      <ul id="report-problems"></ul>
-      <a class="report-link" href="#processing">Every row Sync has not finished</a>
-    </details>
     <div id="grid"></div>
     <p id="no-match" class="no-match" hidden>Nothing matches.</p>
     <section id="empty" class="empty" hidden>
