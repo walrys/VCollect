@@ -220,8 +220,10 @@ def real_pipeline(settings: Settings) -> "Pipeline":
 
 def main(make_pipeline: Callable[[Settings], "Pipeline"] = real_pipeline) -> None:
     """Runs a worker on this process's stdin and stdout. Tests pass a pipeline of fakes."""
-    if not stat.S_ISFIFO(os.fstat(0).st_mode):
-        # asyncio can only wait on a pipe; on a file or /dev/null it never hears the end.
+    mode = os.fstat(0).st_mode
+    if not (stat.S_ISFIFO(mode) or stat.S_ISSOCK(mode)):
+        # asyncio can only wait on a pipe or a socket (uvloop, which uvicorn runs the app on,
+        # gives its children socket pairs); on a file or /dev/null it never hears the end.
         sys.exit("The Sync worker takes its posts from the app, on a pipe")
     logging.basicConfig(level=logging.INFO, format="%(levelname)s:     worker: %(message)s")
     # The app's pipes move off stdin and stdout, so ffmpeg and the downloaders never touch

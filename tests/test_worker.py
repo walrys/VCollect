@@ -37,6 +37,17 @@ def fake_worker(monkeypatch, settings, samples):
     return setup
 
 
+@pytest.fixture(params=["uvloop", "asyncio"])
+def serve(request):
+    """Opens the app on uvloop, as uvicorn runs it, and on asyncio's own loop: uvloop gives the
+    worker socket pairs where asyncio gives it pipes."""
+
+    def serve(app) -> TestClient:
+        return TestClient(app, backend_options={"use_uvloop": request.param == "uvloop"})
+
+    return serve
+
+
 def workers(settings) -> list[int]:
     """The pids of every worker started so far."""
     return [int(path.name) for path in (settings.data_dir / "workers").iterdir()]
@@ -59,13 +70,13 @@ def wait_for_step(client: TestClient, step: str, timeout: float = 30) -> None:
     raise AssertionError(f"Sync never reached {step!r}")
 
 
-def test_a_run_goes_through_one_worker_which_ends_with_it(settings, fake_worker):
+def test_a_run_goes_through_one_worker_which_ends_with_it(settings, fake_worker, serve):
     fake_worker(errors={"indiegamejoe": ["PostFailed", "Could not download: private"]})
     notion = FakeNotion(FULL_SCHEMA)
     notion.add_row(url="https://youtu.be/dvUGDMxl8OU", caption="synth patch")
     notion.add_row(url="https://www.instagram.com/indiegamejoe", caption="profile")
 
-    with TestClient(create_app(settings, notion=notion)) as client:
+    with serve(create_app(settings, notion=notion)) as client:
         client.post("/api/sync")
         progress = wait_for_sync(client)
         posts = {post["caption"]: post for post in client.get("/api/posts").json()["posts"]}
@@ -79,11 +90,11 @@ def test_a_run_goes_through_one_worker_which_ends_with_it(settings, fake_worker)
     assert not alive(pid)
 
 
-def test_cancel_reaches_the_post_in_the_worker(settings, fake_worker):
+def test_cancel_reaches_the_post_in_the_worker(settings, fake_worker, serve):
     notion = FakeNotion(FULL_SCHEMA)
     notion.add_row(url="https://youtu.be/slow_down_1")
 
-    with TestClient(create_app(settings, notion=notion)) as client:
+    with serve(create_app(settings, notion=notion)) as client:
         client.post("/api/sync")
         wait_for_step(client, "downloading")
         client.post("/api/sync/cancel")
@@ -96,12 +107,14 @@ def test_cancel_reaches_the_post_in_the_worker(settings, fake_worker):
     assert not alive(pid)
 
 
-def test_a_worker_that_dies_leaves_its_post_for_later_and_the_run_goes_on(settings, fake_worker):
+def test_a_worker_that_dies_leaves_its_post_for_later_and_the_run_goes_on(
+    settings, fake_worker, serve
+):
     notion = FakeNotion(FULL_SCHEMA)
     notion.add_row(url="https://youtu.be/dvUGDMxl8OU")
     notion.add_row(url="https://youtu.be/worker_dies", caption="doomed")  # newest: goes first
 
-    with TestClient(create_app(settings, notion=notion)) as client:
+    with serve(create_app(settings, notion=notion)) as client:
         client.post("/api/sync")
         progress = wait_for_sync(client)
 
@@ -113,11 +126,11 @@ def test_a_worker_that_dies_leaves_its_post_for_later_and_the_run_goes_on(settin
     assert not any(alive(pid) for pid in workers(settings))
 
 
-def test_shutting_down_mid_post_ends_the_worker_and_the_post_waits(settings, fake_worker):
+def test_shutting_down_mid_post_ends_the_worker_and_the_post_waits(settings, fake_worker, serve):
     notion = FakeNotion(FULL_SCHEMA)
     notion.add_row(url="https://youtu.be/slow_down_1")
 
-    with TestClient(create_app(settings, notion=notion)) as client:
+    with serve(create_app(settings, notion=notion)) as client:
         client.post("/api/sync")
         wait_for_step(client, "downloading")
 
