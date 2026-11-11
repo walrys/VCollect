@@ -19,8 +19,7 @@ from app.notion.mirror import PushRejected
 from app.notion.pull import count_new
 from app.notion.schema import SchemaError
 from app.pipeline.errors import PostFailed
-from app.pipeline.post import index_links
-from app.pipeline.urls import normalise
+from app.pipeline.urls import index_links, normalise
 from app.pipeline.web import cookie_status
 
 MAX_TAG_LENGTH = 100

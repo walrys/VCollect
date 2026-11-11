@@ -5,6 +5,7 @@ import logging
 import mimetypes
 from contextlib import asynccontextmanager, closing
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
@@ -13,11 +14,11 @@ from app import api, db
 from app.config import Settings
 from app.notion.client import NotionClient
 from app.notion.mirror import Mirror
-from app.pipeline.download import Downloader
-from app.pipeline.post import Pipeline, Services
-from app.pipeline.runner import Syncer
-from app.pipeline.summarise import Summariser
-from app.pipeline.transcribe import Transcriber
+from app.pipeline.runner import Processor, Syncer
+from app.pipeline.worker import Worker
+
+if TYPE_CHECKING:
+    from app.pipeline.post import Services
 
 WEB_DIR = Path(__file__).parent / "web"
 
@@ -30,9 +31,10 @@ logger = logging.getLogger(__name__)
 def create_app(
     settings: Settings | None = None,
     notion: NotionClient | None = None,
-    services: Services | None = None,
+    services: "Services | None" = None,
 ) -> FastAPI:
-    """`notion` and `services` replace the real ones built from settings; tests pass fakes."""
+    """`notion` and `services` replace the real ones built from settings; tests pass fakes.
+    Sync runs its posts in a worker process, or with fake services, in this one."""
     settings = settings or Settings()
 
     @asynccontextmanager
@@ -48,15 +50,9 @@ def create_app(
         background: list[asyncio.Task] = []
         if client is not None:
             mirror = Mirror(client, settings.notion_props, settings.db_path)
-            pipeline = Pipeline(
-                services=services or _real_services(settings),
-                notion=client,
-                props=settings.notion_props,
-                data_dir=settings.data_dir,
-                keyframes=settings.keyframes,
-            )
+            processor = _processor(settings, client, services)
             app.state.mirror = mirror
-            app.state.syncer = Syncer(pipeline, mirror, settings.db_path, settings.disk_cap_gb)
+            app.state.syncer = Syncer(processor, mirror, settings.db_path, settings.disk_cap_gb)
             background += [
                 asyncio.create_task(_pull_on_launch(mirror, settings.db_path)),
                 asyncio.create_task(mirror.auto_pull()),
@@ -96,11 +92,18 @@ class PageFiles(StaticFiles):
         return response
 
 
-def _real_services(settings: Settings) -> Services:
-    return Services(
-        downloader=Downloader(settings.cookies_path, settings.max_duration_min),
-        transcriber=Transcriber(settings.whisper_url, settings.whisper_model),
-        summariser=Summariser(settings.ollama_url, settings.ollama_model),
+def _processor(settings: Settings, client: NotionClient, services: "Services | None") -> Processor:
+    if services is None:
+        return Worker(settings.data_dir)
+    # Imports the downloaders, which the server otherwise leaves to the worker.
+    from app.pipeline.post import Pipeline
+
+    return Pipeline(
+        services=services,
+        notion=client,
+        props=settings.notion_props,
+        data_dir=settings.data_dir,
+        keyframes=settings.keyframes,
     )
 
 

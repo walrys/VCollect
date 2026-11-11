@@ -1,21 +1,25 @@
 """The Sync job: one run at a time, one post at a time, in the background. A Retry on the
 Processing page, or a preview's Download video, joins the running job, or starts one of its
-own."""
+own. The job runs in the web server; the posts themselves go through a Processor, which in the
+app is a worker process that lives only as long as a run (see worker.py)."""
 
 import asyncio
+import contextlib
 import logging
 import sqlite3
 from collections import deque
+from collections.abc import Callable, Mapping
 from contextlib import closing
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Protocol
 
 from app import db
 from app.notion.mirror import Mirror
 from app.notion.pull import count_new
 from app.pipeline.errors import LoginNeeded, PostFailed, TryLater
-from app.pipeline.post import Pipeline
+from app.pipeline.urls import index_links
 
 MAX_PROBLEMS = 50
 # Sync stops downloading once DATA_DIR reaches this share of DISK_CAP_GB.
@@ -26,6 +30,28 @@ logger = logging.getLogger(__name__)
 
 class Cancelled(TryLater):
     """Raised at the next step boundary once the user cancels; the post stays Not started."""
+
+
+class Processor(Protocol):
+    """Takes one post through the pipeline: post.Pipeline itself, or worker.Worker, which hands
+    it to a worker process."""
+
+    data_dir: Path
+
+    async def process(
+        self,
+        conn: sqlite3.Connection,
+        post_id: int,
+        on_step: Callable[[str], None],
+        skip_sites: Mapping[str, LoginNeeded],
+    ) -> None:
+        """Raises PostFailed once the row is marked Failed, or TryLater to leave it for later."""
+
+    def cancel(self) -> None:
+        """The user cancelled: the post in hand stops at its next step."""
+
+    async def close(self) -> None:
+        """The run is over."""
 
 
 @dataclass
@@ -47,8 +73,8 @@ class Progress:
 
 
 class Syncer:
-    def __init__(self, pipeline: Pipeline, mirror: Mirror, db_path: Path, disk_cap_gb: float):
-        self.pipeline = pipeline
+    def __init__(self, processor: Processor, mirror: Mirror, db_path: Path, disk_cap_gb: float):
+        self.processor = processor
         self.mirror = mirror
         self.db_path = db_path
         self.disk_cap_bytes = disk_cap_gb * 1024**3
@@ -111,11 +137,14 @@ class Syncer:
 
     def cancel(self) -> None:
         self._cancelled = True
+        self.processor.cancel()
 
     async def stop(self) -> None:
         """For shutdown: the interrupted post resumes on the next Sync."""
         if self._task is not None:
             self._task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._task  # until the processor has closed
 
     def status(self) -> dict:
         with closing(db.connect(self.db_path)) as conn:
@@ -146,7 +175,7 @@ class Syncer:
             if pull:
                 await self.mirror.pull(force=True)
             with closing(db.connect(self.db_path)) as conn:
-                self.pipeline.index_links(conn)
+                index_links(conn)
                 if pull:
                     waiting = conn.execute(
                         "SELECT id FROM posts WHERE (notion_state = 'synced'"
@@ -158,7 +187,7 @@ class Syncer:
                     if self._cancelled:
                         progress.stopped = "Cancelled"
                         break
-                    used = await asyncio.to_thread(disk_used, self.pipeline.data_dir)
+                    used = await asyncio.to_thread(disk_used, self.processor.data_dir)
                     if used >= DISK_STOP_SHARE * self.disk_cap_bytes:
                         progress.stopped = "Stopped: the data folder is near DISK_CAP_GB"
                         break
@@ -170,6 +199,7 @@ class Syncer:
             progress.stopped = f"Sync stopped: {error}"
         finally:
             self._in_hand = None
+            await self.processor.close()
             progress.running = False
             progress.current = progress.step = ""
             progress.finished_at = _now()
@@ -186,7 +216,7 @@ class Syncer:
         retry_error = ""  # why the post is left for the next Sync, if it is
         needs_login = False  # and whether a session in cookies.txt would solve it
         try:
-            await self.pipeline.process(conn, post_id, self._on_step, blocked_sites)
+            await self.processor.process(conn, post_id, self._on_step, blocked_sites)
             progress.done += 1
         except Cancelled:
             progress.stopped = "Cancelled"

@@ -2,6 +2,7 @@
 of page the link is."""
 
 import re
+import sqlite3
 from dataclasses import dataclass
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -52,6 +53,24 @@ def normalise(raw: str) -> PostUrl:
         return _reddit(host, path)
     url = urlunsplit(("https", netloc, parts.path, urlencode(query), ""))
     return PostUrl(url, "other", host)
+
+
+def index_links(conn: sqlite3.Connection) -> None:
+    """Give every post its canonical link before processing, so duplicates resolve to the
+    earliest saved row whichever order posts are processed in."""
+    rows = conn.execute(
+        "SELECT id, url FROM posts WHERE normalized_url IS NULL AND url != ''"
+    ).fetchall()
+    with conn:
+        for post_id, url in rows:
+            try:
+                link = normalise(url)
+            except PostFailed:
+                continue
+            conn.execute(
+                "UPDATE posts SET normalized_url = ?, platform = ? WHERE id = ?",
+                (link.url, link.platform, post_id),
+            )
 
 
 def _clean_query(query: str) -> list[tuple[str, str]]:

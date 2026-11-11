@@ -55,7 +55,7 @@ v1 deliberately leaves out:
 ## Architecture
 
 ### Services (`docker-compose.yml`)
-- `app`: FastAPI web server and the background worker in one container, with ffmpeg, yt-dlp, instaloader.
+- `app`: FastAPI web server and Sync's worker in one container, with ffmpeg, yt-dlp, instaloader. The server, up all day, never loads the downloaders: each run starts a worker process for its posts, which exits when the run ends and takes the run's memory with it (idle server ~55 MB).
 - `ollama`: `qwen3.5:9b` on the PC GPU, `qwen3.5:4b` or `2b` on the N100 (`OLLAMA_MODEL`).
 - `whisper`: local speech-to-text, on the CPU on every machine (see Open questions).
 - `docker-compose.gpu.yml` gives `ollama` the NVIDIA GPU (dev PC only). `docker-compose.dev.yml` mounts the source and reloads on save. Each machine's `.env` picks its files through `COMPOSE_FILE`, so every command is plain `docker compose …`.
@@ -81,7 +81,7 @@ v1 deliberately leaves out:
 - Runs only from the Sync button, plus an optional nightly run (`NIGHTLY_SYNC`, off by default). New rows wait for the button.
 - A row's Retry on the Processing page (Failed and To retry rows) processes that one row at once: next in a running Sync (moving up if the Sync has it queued; the row in hand is left alone), else in a run of its own that skips the pull and leaves every other row for the next Sync. Retry all only sets the Failed rows back to Not started for the next Sync.
 - A preview's **Download video** (in the pop-up) fetches its video the same way, at once ("Last download" in the report). The post stays Done with its summary and tags, Notion is not asked, and whisper transcribes the video when the captions gave nothing. Until the video lands (`posts.want_video`) every Sync tries again; a permanent failure leaves the preview as it was and is reported.
-- One job at a time, one row at a time (platform rate limits). Server-side, so it survives closing the tab. Every open tab shows the progress bar ("12 / 40 · compressing <title>") with a cancel. Posts join the grid as each finishes.
+- One job at a time, one row at a time (platform rate limits). Server-side, so it survives closing the tab. The job (queue, pull, progress, cancel) runs in the server; each post goes over a pipe to the run's worker process (`python -m app.pipeline.worker`, JSON lines), started with the run's first post and closed when the run ends. A worker that dies (out of memory, say) leaves its post for the next Sync, and the run's next post gets a fresh one. Every open tab shows the progress bar ("12 / 40 · compressing <title>") with a cancel. Posts join the grid as each finishes.
 - Rows to process: `Status` = Not started. "Sync (N new)" counts only rows no Sync has tried: a row a Sync leaves for later keeps the reason (`retry_error`) and is retried by every Sync, but is no longer new.
 - Per row:
   1. **Normalise the URL** (`urls.py`): strip tracking params (`?igsh=`, `&si=`), rewrite `youtu.be` / `shorts/` to `watch?v=`, every Reddit post link to `/comments/<id>/`, and say what kind of page it is: post, profile (Instagram account, YouTube channel), playlist or page. A duplicate of an existing post → Failed "Duplicate of <link to first row>". A Reddit share link (`/r/<sub>/s/<code>`) names its post only once followed, so the download resolves it and the duplicate check runs again. A row whose link is empty or not a link → Failed.
@@ -140,10 +140,11 @@ app/                     FastAPI package
   pipeline/              Sync: urls, download (routes every link), pages (readable copies), reddit,
                          web (browser-like HTTP, cookie status), content (what a download brings back),
                          media (ffmpeg), transcribe, summarise; post.py runs one post's steps,
-                         runner.py the background job; errors.py decides Failed (PostFailed) vs
-                         retry next Sync (TryLater)
-tests/                   pytest; fakes/ holds FakeNotion, fake downloader/whisper/Ollama, FakeWeb
-                         (canned pages), and sample media that ffmpeg generates per test session
+                         runner.py the background job, worker.py the process a run's posts go
+                         through; errors.py decides Failed (PostFailed) vs retry next Sync (TryLater)
+tests/                   pytest; fakes/ holds FakeNotion, fake downloader/whisper/Ollama, a fake
+                         worker, FakeWeb (canned pages), and sample media that ffmpeg generates
+                         per test session
 docker/entrypoint.sh     refreshes yt-dlp and instaloader on every server start
 docker-compose*.yml      base stack, dev override, GPU override
 .env.example             every setting, plus the per-machine COMPOSE_FILE

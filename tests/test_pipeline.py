@@ -5,6 +5,7 @@ import pytest
 from app.notion.pull import pull
 from app.pipeline.errors import PostFailed, TryLater
 from app.pipeline.post import Pipeline
+from app.pipeline.urls import index_links
 from tests.fakes.notion import FULL_SCHEMA, PROPS, FakeNotion
 from tests.fakes.services import fake_services, page
 
@@ -26,7 +27,7 @@ def add_post(notion, conn, **fields):
 
 
 def process(pipeline, conn, post_id):
-    pipeline.index_links(conn)
+    index_links(conn)
     steps = []
     asyncio.run(pipeline.process(conn, post_id, steps.append))
     return steps
