@@ -57,7 +57,7 @@ v1 deliberately leaves out:
 ### Services (`docker-compose.yml`)
 - `app`: FastAPI web server and Sync's worker in one container, with ffmpeg, yt-dlp, instaloader. The server, up all day, never loads the downloaders: each run starts a worker process for its posts, which exits when the run ends and takes the run's memory with it (idle server ~55 MB).
 - `ollama`: `qwen3.5:9b` on the PC GPU, `qwen3.5:4b` or `2b` on the N100 (`OLLAMA_MODEL`).
-- `whisper`: local speech-to-text, on the CPU on every machine (see Open questions).
+- `whisper`: local speech-to-text, on the CPU on every machine (see Open questions). Its model unloads after 5 idle minutes; `MALLOC_ARENA_MAX` / `MALLOC_TRIM_THRESHOLD_` make it hand the memory back (~250 MB idle, not 1.6 GB after a Sync).
 - `docker-compose.gpu.yml` gives `ollama` the NVIDIA GPU (dev PC only). `docker-compose.dev.yml` mounts the source and reloads on save. Each machine's `.env` picks its files through `COMPOSE_FILE`, so every command is plain `docker compose …`.
 - `OLLAMA_URL` / `WHISPER_URL` are config, so an `app` on ZimaOS can send AI work to the PC when it is on.
 - `DATA_DIR` (default `./data`, gitignored) holds the SQLite DB and all media. Moving machines means copying this folder.

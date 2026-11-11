@@ -28,6 +28,10 @@ services:
     environment:
       PRELOAD_MODELS: '["${WHISPER_MODEL:-Systran/faster-whisper-small.en}"]'
       WHISPER__COMPUTE_TYPE: int8
+      # The model unloads after 5 idle minutes, but glibc keeps the memory it used unless
+      # told to hand it back: measured 736 MiB after an unload without these, 254 MiB with.
+      MALLOC_ARENA_MAX: "2"
+      MALLOC_TRIM_THRESHOLD_: "131072"
       ENABLE_UI: "false"
       LOG_LEVEL: info
     volumes:
