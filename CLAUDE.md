@@ -109,7 +109,7 @@ v1 deliberately leaves out:
 The web page talks to the server only through the JSON API (`/api/posts`, `/api/tags`, `/api/sync`, …), so a future iOS app reuses it unchanged. Media is served with HTTP range requests (seeking, iOS AVPlayer). Each post carries its `kind` (media, page, preview, placeholder), `status` (done, new, login, waiting, failed) and `reason`, and a preview its `duration` and `video_wanted`; `/api/posts/{id}/page` returns the readable copy, `POST /api/posts/{id}/video` downloads a preview's video, and `/api/posts/{id}/cookies` whether `cookies.txt` has the site's cookies (missing, expired, present), read from the file without asking the site.
 
 ### Gallery details
-- **Header**: stays on screen as a translucent bar holding the wordmark, the search bar, a **+** button whose panel adds a URL, with an optional caption and Notion tags (brand-new ones too), by creating a Notion row (warns on duplicates), and the menu. `/` focuses search.
+- **Header**: stays on screen as a translucent bar holding the logo (the mark beside VCOLLECT in the text's colour; the mark alone under 390 px, where the menu at its widest leaves no room), the search bar, a **+** button whose panel adds a URL, with an optional caption and Notion tags (brand-new ones too), by creating a Notion row (warns on duplicates), and the menu. `/` focuses search.
 - **Search**: server-side, debounced, keyword FTS5 with prefix matching over title, user caption, platform caption, summary, transcript, uploader, both kinds of tags, the readable copy and the words of the link ("reddit", "gamedev"). Results keep timeline order and combine with selected tags as AND.
 - **Tag bar**: Notion tags as filled chips; AI tags in a second row as outlined chips. Each row is one line that scrolls sideways and fades at its end; one "Show all" toggle at the end of the first line springs both rows open to every tag (and back), shown only when a line holds less than every tag. Filtering is instant (client-side) and AND across tags. Once tags are selected, the bar shows only tags present in the current results, with counts, and a "12 of 162 posts · Clear" line appears.
 - **Grid**: one 9:16 tile per post (landscape centre-cropped), ordered by saved date, static thumbnails, a "1/5" badge on carousels, an icon on image posts and a cloud with its length on a preview. A page gets a **title card**: its title, large, over the site's logo and domain. A **placeholder** shows the site's logo over the user's caption on the site's tint, with a badge: New, Needs login, Waiting or Failed. Both are drawn in the browser (`faces.js`, logos in `web/logos/`: Simple Icons, CC0), so they follow the theme.
@@ -134,7 +134,8 @@ app/                     FastAPI package
                          menu.js (☰ panel), report.js (ⓘ last-Sync report), deleted.js
                          (deleted-in-Notion dialog), processing.js (#processing page), tags.js,
                          toast.js, spring.js (springs and gesture helpers for the player's and the
-                         tag bar's motion), app.css
+                         tag bar's motion), app.css, icon.svg (tab icon, follows the theme),
+                         apple-touch-icon.png (home screen, 180 px, drawn from the same mark)
   notion/                client, schema check, pull; mirror.py runs every Notion conversation
                          (pull, push, create, trash) under one lock
   pipeline/              Sync: urls, download (routes every link), pages (readable copies), reddit,
