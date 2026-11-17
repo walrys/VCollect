@@ -187,3 +187,38 @@ def test_a_newer_notion_edit_beats_a_waiting_gallery_edit(conn):
 
     assert post(conn, page)["user_caption"] == "from notion"
     assert conn.execute("SELECT COUNT(*) FROM pending_edits").fetchone()[0] == 0
+
+
+def test_a_changed_link_moves_the_duplicate_key_with_it(conn):
+    fake = FakeNotion(FULL_SCHEMA)
+    reel = fake.add_row(url="https://www.instagram.com/reel/abc/")
+    pull_once(fake, conn)
+    assert post(conn, reel)["normalized_url"] == "https://www.instagram.com/p/abc/"
+    assert post(conn, reel)["platform"] == "instagram"
+
+    fake.edit_row(reel, url="https://youtu.be/dvUGDMxl8OU")
+    pull_once(fake, conn)
+    row = post(conn, reel)
+    assert (row["normalized_url"], row["platform"]) == (
+        "https://www.youtube.com/watch?v=dvUGDMxl8OU",
+        "youtube",
+    )
+
+    fake.edit_row(reel, url="not a link")
+    pull_once(fake, conn)
+    assert (post(conn, reel)["normalized_url"], post(conn, reel)["platform"]) == (None, None)
+
+
+def test_a_link_left_alone_keeps_its_resolved_key(conn):
+    fake = FakeNotion(FULL_SCHEMA)
+    share = fake.add_row(url="https://www.reddit.com/r/x/s/Shared1")
+    pull_once(fake, conn)
+    with conn:  # what Sync learns by following the share link
+        conn.execute(
+            "UPDATE posts SET normalized_url = 'https://www.reddit.com/comments/abc/'"
+            " WHERE notion_page_id = ?",
+            (share,),
+        )
+    fake.edit_row(share, caption="a note")
+    pull_once(fake, conn)
+    assert post(conn, share)["normalized_url"] == "https://www.reddit.com/comments/abc/"

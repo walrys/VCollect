@@ -27,6 +27,8 @@ _SEARCH_ROWS_1 = """
                      JOIN tags t ON t.id = pt.tag_id WHERE pt.post_id = p.id), '')
     FROM posts p
 """
+# A Reddit share link (/r/<sub>/s/<code>), as a LIKE pattern.
+_REDDIT_SHARE = "%reddit.com/%/s/%"
 
 # Append-only. Entry N upgrades the schema to version N+1, tracked in PRAGMA user_version.
 MIGRATIONS: list[str] = [
@@ -144,6 +146,27 @@ MIGRATIONS: list[str] = [
     ALTER TABLE posts ADD COLUMN duration REAL;  -- a preview's length on its site, in seconds
     -- The video of a preview was asked for and has not landed yet; every Sync tries again.
     ALTER TABLE posts ADD COLUMN want_video INTEGER NOT NULL DEFAULT 0;
+    """,
+    # A post remembers the link its media came from, so a link changed since (in Notion or the
+    # gallery) shows, and a resync fetches the new one. Until now that link was the duplicate
+    # key, which a pull never moved on: it seeds fetched_url, and the keys are made afresh. A
+    # Reddit share link's key is the post it resolved to, not its own link, so it keeps both.
+    # The link becomes a gallery edit Notion is sent, like the caption.
+    f"""
+    ALTER TABLE posts ADD COLUMN fetched_url TEXT;  -- canonical, as urls.normalise gives it
+    UPDATE posts SET fetched_url = normalized_url
+        WHERE media_ready = 1 AND url NOT LIKE '{_REDDIT_SHARE}';
+    UPDATE posts SET normalized_url = NULL, platform = NULL WHERE url NOT LIKE '{_REDDIT_SHARE}';
+
+    CREATE TABLE pending_edits_new (
+        post_id   INTEGER NOT NULL REFERENCES posts (id) ON DELETE CASCADE,
+        field     TEXT NOT NULL CHECK (field IN ('caption', 'summary', 'tags', 'ai_tags', 'url')),
+        edited_at TEXT NOT NULL,  -- UTC ISO 8601
+        PRIMARY KEY (post_id, field)
+    );
+    INSERT INTO pending_edits_new SELECT post_id, field, edited_at FROM pending_edits;
+    DROP TABLE pending_edits;
+    ALTER TABLE pending_edits_new RENAME TO pending_edits;
     """,
 ]
 

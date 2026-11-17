@@ -29,7 +29,10 @@ def test_posts_list_every_row_newest_first(synced):
     assert (pasta["state"], pasta["status"], pasta["kind"]) == ("synced", "done", "media")
     assert pasta["platform"] == "instagram"
     assert pasta["notion_url"].startswith("https://app.notion.com/p/")
-    assert pasta["thumb"] == f"/media/{pasta['id']}/thumb.webp"
+    # Versioned by the link the media came from, so a resync's files are never stale copies.
+    assert pasta["thumb"].startswith(f"/media/{pasta['id']}/thumb.webp?v=")
+    assert pasta["fetched_url"] == "https://www.instagram.com/p/AbCdEf/"
+    assert pasta["link_changed"] is False
     assert [(item["kind"], item["width"], item["height"]) for item in pasta["items"]] == [
         ("video", 480, 854)
     ]
@@ -242,3 +245,65 @@ def test_migrating_marks_the_rows_a_login_would_let_through(tmp_path):
         db.migrate(conn)
         rows = conn.execute("SELECT needs_login, normalized_url FROM posts ORDER BY id").fetchall()
     assert [tuple(row) for row in rows] == [(1, None), (1, None), (0, None)]
+
+
+def test_migrating_remembers_the_link_media_came_from(tmp_path):
+    with closing(db.connect(tmp_path / "old.db")) as conn:
+        for sql in db.MIGRATIONS[:8]:
+            conn.executescript(sql)
+        conn.execute("PRAGMA user_version = 8")
+        conn.executemany(
+            "INSERT INTO posts (url, saved_at, media_ready, normalized_url, platform)"
+            " VALUES (?, 'now', ?, ?, ?)",
+            [
+                # Its link was changed in Notion since: the key is still the first link's.
+                (
+                    "https://www.instagram.com/reel/New/",
+                    1,
+                    "https://www.instagram.com/p/Old/",
+                    "instagram",
+                ),
+                # A share link, resolved by its download.
+                (
+                    "https://www.reddit.com/r/x/s/Shared1",
+                    1,
+                    "https://www.reddit.com/comments/abc/",
+                    "reddit",
+                ),
+                ("https://youtu.be/dvUGDMxl8OU", 0, "https://www.youtube.com/watch?v=x", None),
+            ],
+        )
+        conn.execute(
+            "INSERT INTO pending_edits (post_id, field, edited_at) VALUES (1, 'caption', 'now')"
+        )
+        conn.commit()
+        db.migrate(conn)
+        rows = conn.execute(
+            "SELECT fetched_url, normalized_url, platform FROM posts ORDER BY id"
+        ).fetchall()
+        edits = conn.execute("SELECT post_id, field FROM pending_edits").fetchall()
+        conn.execute(
+            "INSERT INTO pending_edits (post_id, field, edited_at) VALUES (1, 'url', 'now')"
+        )
+
+    assert [tuple(row) for row in rows] == [
+        ("https://www.instagram.com/p/Old/", None, None),
+        (None, "https://www.reddit.com/comments/abc/", "reddit"),
+        (None, None, None),
+    ]
+    assert [tuple(edit) for edit in edits] == [(1, "caption")]
+
+
+def test_launch_gives_every_link_its_key(settings):
+    settings.data_dir.mkdir(parents=True)
+    with closing(db.connect(settings.db_path)) as conn:
+        db.migrate(conn)
+        conn.execute(
+            "INSERT INTO posts (url, saved_at) VALUES ('https://www.instagram.com/reel/A/', 'now')"
+        )
+        conn.commit()
+    with TestClient(create_app(settings)):
+        pass
+    with closing(db.connect(settings.db_path)) as conn:
+        row = conn.execute("SELECT normalized_url, platform FROM posts").fetchone()
+    assert tuple(row) == ("https://www.instagram.com/p/A/", "instagram")

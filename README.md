@@ -156,4 +156,6 @@ Tests run offline. They use fakes for Notion, the downloaders, whisper and Ollam
 | "Instagram is limiting anonymous requests" | Profiles and carousels that mix videos and images wait for the next Sync; everything else carries on. It passes after a while; `cookies.txt` (step 6) raises the limit. |
 | A post shows "Needs login" | Its site (Reddit, or an age-restricted post) only shows it to a logged-in account. The post's pop-up says whether `cookies.txt` has that site's cookies; add them (step 6) and press Retry there. |
 | "refused the download" | The site blocks automated requests (403 or a bot check). If it has a login, its cookies in `cookies.txt` may help; then press Retry. |
+| A post shows "Link changed" | Its link was changed (in Notion, or with Edit in its pop-up) after its media was fetched. Press **Resync** in its pop-up to fetch it again from the new link, with a new transcript, summary and AI tags. |
+| A post shows "Resync failed" | The new link could not be fetched; its pop-up and the Processing page say why. The old media stays until a resync works. Fix the link and press Resync again. |
 | Sync refuses to download | Disk usage is above 95% of `DISK_CAP_GB` (shown in the ☰ menu). Delete posts or raise the cap. |

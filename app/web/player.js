@@ -369,20 +369,23 @@ function showInfo() {
   el("player-summary").classList.toggle("pending", !post.summary);
   el("player-summary").hidden = waiting;
 
-  const status = waiting ? STATUS[post.status] : preview && previewStatus(post);
+  const status = waiting
+    ? STATUS[post.status]
+    : linkStatus(post) || (preview && previewStatus(post));
   el("player-status").hidden = !status;
   if (status) {
     const label = document.createElement("strong");
     label.textContent = `${status.badge}. `;
-    el("player-status").replaceChildren(label, post.reason || status.note);
+    el("player-status").replaceChildren(label, status.text ?? (post.reason || status.note));
     el("player-status").className = `player-status ${status.tone}`.trim();
   }
+  el("player-resync").hidden = !post.link_changed || post.state !== "synced";
   // A link no Sync has tried yet is fetched ("Sync"); once one has, it is tried again ("Retry").
   const retryButton = el("player-retry");
   retryButton.hidden = !waiting || post.state !== "synced";
   retryButton.textContent = post.status === "new" ? "Sync" : "Retry";
   retryButton.title = post.status === "new" ? "Fetch this link now" : "Try this link again now";
-  el("player-video").hidden = !preview;
+  el("player-video").hidden = !preview || post.link_changed; // Resync comes first
   showCookies(post);
   showInlinePage(post);
   // The caption is the user's own note; skip it when it is already the title.
@@ -415,6 +418,20 @@ function showInfo() {
   el("player-notion").href = post.notion_url;
   el("player-notion").hidden = !post.notion_url;
   sheet.querySelector(".player-info").scrollTop = 0;
+}
+
+// A post whose link moved on since its media was fetched: where the media is from, or how the
+// resync asked for is getting on (its reason: why the last try failed or left it for later).
+function linkStatus(post) {
+  if (!post.link_changed) return null;
+  if (post.status === "failed") return { badge: "Resync failed", tone: "danger", note: "" };
+  if (post.status === "done") {
+    const from = post.fetched_url?.replace(/^https?:\/\/(www\.)?/, "") || "its old link";
+    const text = `Its media is from ${from}. Resync fetches the post again from its new link.`;
+    return { badge: "Link changed", tone: "warn", text };
+  }
+  if (post.reason) return { badge: "Resync waiting", tone: "warn", note: "" };
+  return { badge: "Resync asked for", tone: "", note: "It runs now, or with the next Sync." };
 }
 
 // Why a preview has no video, or how the video asked for is getting on (its reason: why the
@@ -494,6 +511,32 @@ async function retry() {
   }
 }
 
+// Fetches the post afresh from its new link, at once (next if a Sync is running); the header
+// shows progress, and the new media takes the old one's place here when it lands. The summary
+// and AI tags are made again; the caption and tags stay.
+async function resync() {
+  const button = el("player-resync");
+  const post = posts[postIndex];
+  button.disabled = true;
+  try {
+    const response = await fetch(`/api/posts/${post.id}/resync`, { method: "POST" });
+    if (!response.ok) {
+      toast(await errorText(response), "error");
+      return;
+    }
+    const result = await response.json();
+    const index = posts.findIndex((p) => p.id === post.id);
+    if (index >= 0) posts[index] = result.post;
+    handlers.onChange(result.post);
+    document.dispatchEvent(new CustomEvent("vcollect:waiting", { detail: result.new }));
+    if (index === postIndex && !editing) showInfo();
+    toast("Resyncing from the new link");
+    document.dispatchEvent(new CustomEvent("vcollect:retrying"));
+  } finally {
+    button.disabled = false;
+  }
+}
+
 // Downloads a preview's video at once, next if a Sync is running; the header shows progress,
 // and the post turns into its video here when it lands. The summary and tags stay.
 async function downloadVideo() {
@@ -538,11 +581,22 @@ document.addEventListener("vcollect:posts", (event) => {
 
 async function save(changes) {
   const post = posts[postIndex];
-  const response = await fetch(`/api/posts/${post.id}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(changes),
-  });
+  const send = (force) =>
+    fetch(`/api/posts/${post.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...changes, force }),
+    });
+  let response = await send(false);
+  // A link another post has already: saved only once confirmed, as in Add a link.
+  if (response.status === 409) {
+    const duplicate = (await response.clone().json()).detail?.duplicate;
+    if (duplicate) {
+      const name = duplicate.caption || duplicate.url;
+      if (!confirm(`This link is already saved as "${name}". Save it here too?`)) return;
+      response = await send(true);
+    }
+  }
   if (!response.ok) {
     toast(await errorText(response), "error");
     return;
@@ -723,6 +777,7 @@ el("player-edit").addEventListener("click", () => {
 el("player-delete").addEventListener("click", remove);
 el("player-readd").addEventListener("click", readd);
 el("player-retry").addEventListener("click", retry);
+el("player-resync").addEventListener("click", resync);
 el("player-video").addEventListener("click", downloadVideo);
 // Escape closes the same way as the close button, shrinking back into the tile.
 dialog.addEventListener("cancel", (event) => {

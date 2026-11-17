@@ -133,7 +133,7 @@ def test_a_previews_video_downloads_at_once(settings, samples):
 
     assert (preview["kind"], preview["status"], preview["items"]) == ("preview", "done", [])
     assert (preview["duration"], preview["video_wanted"]) == (3600.0, False)
-    assert preview["thumb"] == f"/media/{preview['id']}/thumb.webp"
+    assert preview["thumb"].startswith(f"/media/{preview['id']}/thumb.webp?v=")
     assert answer.json()["post"]["video_wanted"] is True
     assert (progress["video"], progress["retry"], progress["total"], progress["done"]) == (
         True,

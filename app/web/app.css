@@ -1514,6 +1514,7 @@ button.chip.selected:hover {
 }
 
 .editor textarea,
+.editor-link,
 .tag-input {
   width: 100%;
   padding: 9px 12px;
@@ -1527,6 +1528,7 @@ button.chip.selected:hover {
 }
 
 .editor textarea:focus,
+.editor-link:focus,
 .tag-input:focus {
   outline: none;
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent);

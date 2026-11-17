@@ -63,14 +63,27 @@ def index_links(conn: sqlite3.Connection) -> None:
     ).fetchall()
     with conn:
         for post_id, url in rows:
-            try:
-                link = normalise(url)
-            except PostFailed:
-                continue
-            conn.execute(
-                "UPDATE posts SET normalized_url = ?, platform = ? WHERE id = ?",
-                (link.url, link.platform, post_id),
-            )
+            key, platform = canonical(url)
+            if key is not None:
+                conn.execute(
+                    "UPDATE posts SET normalized_url = ?, platform = ? WHERE id = ?",
+                    (key, platform, post_id),
+                )
+
+
+def canonical(raw: str) -> tuple[str | None, str | None]:
+    """A link's canonical form and platform; (None, None) when it is not a link."""
+    try:
+        link = normalise(raw)
+    except PostFailed:
+        return None, None
+    return link.url, link.platform
+
+
+def link_changed(url: str, fetched_url: str | None) -> bool:
+    """Whether a post's link no longer leads where its media was fetched from (`fetched_url`,
+    canonical; None before anything was). A change only to tracking parameters is no change."""
+    return fetched_url is not None and canonical(url)[0] != fetched_url
 
 
 def _clean_query(query: str) -> list[tuple[str, str]]:

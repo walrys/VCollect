@@ -2,6 +2,7 @@
 Every Notion row is a post from its first pull on; until Sync has fetched it, it shows as a
 placeholder with its status."""
 
+import hashlib
 import shutil
 import sqlite3
 from collections import defaultdict
@@ -19,7 +20,7 @@ from app.notion.mirror import PushRejected
 from app.notion.pull import count_new
 from app.notion.schema import SchemaError
 from app.pipeline.errors import PostFailed
-from app.pipeline.urls import index_links, normalise
+from app.pipeline.urls import PostUrl, canonical, index_links, link_changed, normalise
 from app.pipeline.web import cookie_status
 
 MAX_TAG_LENGTH = 100
@@ -35,6 +36,8 @@ class PostEdit(BaseModel):
     summary: str | None = None
     tags: list[str] | None = None
     ai_tags: list[str] | None = None
+    url: str | None = None  # the saved link; a post with media then offers a resync
+    force: bool = False  # save the link even though another post has it already
 
 
 class NewLink(BaseModel):
@@ -105,23 +108,60 @@ async def download_video(post_id: int, request: Request) -> dict:
             409, "Notion is not configured: set NOTION_TOKEN and NOTION_DATA_SOURCE_ID."
         )
     with closing(_connect(request)) as conn:
-        _post_or_404(conn, post_id)
+        post = _post_or_404(conn, post_id)
+    if link_changed(post["url"], post["fetched_url"]):
+        raise HTTPException(409, "Its link changed since: Resync fetches the post first.")
     if not syncer.download_video(post_id):
         raise HTTPException(409, "Only a video saved as a preview can be downloaded.")
     with closing(_connect(request)) as conn:
         return {"post": _load(conn, "posts.id = ?", (post_id,))[0]}
 
 
+@router.post("/posts/{post_id}/resync")
+async def resync(post_id: int, request: Request) -> dict:
+    """Fetches a post whose link changed afresh from the new link, at once: next in a running
+    Sync, else in a run of its own. Its media stays on show until the new media replaces it;
+    its transcript, summary and AI tags are made again, and its Notion row goes back to Not
+    started until then. Should that fail for good, the row is Failed and the old media stays."""
+    syncer = request.app.state.syncer
+    if syncer is None:
+        raise HTTPException(
+            409, "Notion is not configured: set NOTION_TOKEN and NOTION_DATA_SOURCE_ID."
+        )
+    with closing(_connect(request)) as conn:
+        post = _post_or_404(conn, post_id)
+    if post["notion_state"] != "synced":
+        raise HTTPException(409, "Only posts in Notion can be resynced.")
+    if not link_changed(post["url"], post["fetched_url"]):
+        raise HTTPException(409, "Its link has not changed since its media was fetched.")
+    _link_or_422(post["url"])
+    try:
+        started = await syncer.resync(post_id)
+    except (SchemaError, NotionError, HTTPError) as error:
+        raise HTTPException(502, f"Could not set the row back in Notion: {error}") from error
+    if not started:
+        raise HTTPException(409, "It is being processed right now, or is gone from Notion.")
+    with closing(_connect(request)) as conn:
+        return {"post": _load(conn, "posts.id = ?", (post_id,))[0], "new": count_new(conn)}
+
+
 @router.patch("/posts/{post_id}")
 async def edit_post(post_id: int, edit: PostEdit, request: Request) -> dict:
     """Saves locally at once, then sends the change to Notion. `notion` in the answer says how
     that went: saved, waiting (Notion unreachable; the next pull sends it), local (the post is
-    not in Notion), rejected, or unchanged."""
+    not in Notion), rejected, or unchanged. A new link must be a link (422), and one another
+    post has already is refused (409, naming it) unless `force`."""
     tags = None if edit.tags is None else _clean_tags(edit.tags, lower=False)
     ai_tags = None if edit.ai_tags is None else _clean_tags(edit.ai_tags, lower=True)
     with closing(_connect(request)) as conn:
         post = _post_or_404(conn, post_id)
-        changed = _apply(conn, post, edit, tags, ai_tags)
+        url = None if edit.url is None or edit.url.strip() == post["url"] else edit.url.strip()
+        if url is not None:
+            key = _link_or_422(url).url
+            duplicate = _duplicate(conn, key, post_id)
+            if duplicate and not edit.force:
+                raise _duplicate_error(duplicate)
+        changed = _apply(conn, post, edit, tags, ai_tags, url)
 
     notion, message = "unchanged", ""
     mirror = request.app.state.mirror
@@ -228,31 +268,13 @@ async def add_link(link: NewLink, request: Request) -> dict:
         raise HTTPException(
             409, "Notion is not configured: set NOTION_TOKEN and NOTION_DATA_SOURCE_ID."
         )
-    try:
-        canonical = normalise(link.url).url
-    except PostFailed as error:
-        raise HTTPException(422, str(error)) from error
+    key = _link_or_422(link.url).url
     tags = _clean_tags(link.tags, lower=False)
 
     with closing(_connect(request)) as conn:
-        index_links(conn)
-        duplicate = conn.execute(
-            "SELECT id, user_caption, title, url FROM posts WHERE normalized_url = ?"
-            " ORDER BY saved_at LIMIT 1",
-            (canonical,),
-        ).fetchone()
+        duplicate = _duplicate(conn, key)
     if duplicate and not link.force:
-        raise HTTPException(
-            409,
-            {
-                "message": "This link is already saved.",
-                "duplicate": {
-                    "id": duplicate["id"],
-                    "caption": duplicate["user_caption"] or duplicate["title"],
-                    "url": duplicate["url"],
-                },
-            },
-        )
+        raise _duplicate_error(duplicate)
 
     try:
         post_id = await mirror.create_row(link.url.strip(), link.caption.strip(), tags)
@@ -263,11 +285,50 @@ async def add_link(link: NewLink, request: Request) -> dict:
         return {"created": post_id, "new": count_new(conn)}
 
 
-def _apply(conn, post: sqlite3.Row, edit: PostEdit, tags, ai_tags) -> list[str]:
-    """Writes the edit and, for posts in Notion, marks the changed fields as waiting for it."""
+def _link_or_422(url: str) -> PostUrl:
+    try:
+        return normalise(url)
+    except PostFailed as error:
+        raise HTTPException(422, str(error)) from error
+
+
+def _duplicate(conn: sqlite3.Connection, key: str, other_than: int = 0) -> sqlite3.Row | None:
+    """The first saved post with the canonical link `key`, other than post `other_than`."""
+    index_links(conn)
+    return conn.execute(
+        "SELECT id, user_caption, title, url FROM posts WHERE normalized_url = ? AND id != ?"
+        " ORDER BY saved_at LIMIT 1",
+        (key, other_than),
+    ).fetchone()
+
+
+def _duplicate_error(duplicate: sqlite3.Row) -> HTTPException:
+    return HTTPException(
+        409,
+        {
+            "message": "This link is already saved.",
+            "duplicate": {
+                "id": duplicate["id"],
+                "caption": duplicate["user_caption"] or duplicate["title"],
+                "url": duplicate["url"],
+            },
+        },
+    )
+
+
+def _apply(conn, post: sqlite3.Row, edit: PostEdit, tags, ai_tags, url: str | None) -> list[str]:
+    """Writes the edit and, for posts in Notion, marks the changed fields as waiting for it.
+    `url` is the new link, already checked; None leaves the link as it is."""
     post_id = post["id"]
     changed = []
     with conn:
+        if url is not None:
+            key, platform = canonical(url)
+            conn.execute(
+                "UPDATE posts SET url = ?, normalized_url = ?, platform = ? WHERE id = ?",
+                (url, key, platform, post_id),
+            )
+            changed.append("url")
         if edit.caption is not None and edit.caption.strip() != post["user_caption"]:
             conn.execute(
                 "UPDATE posts SET user_caption = ? WHERE id = ?", (edit.caption.strip(), post_id)
@@ -327,7 +388,8 @@ def _key(names: list[str]) -> list[str]:
 
 def _post_or_404(conn: sqlite3.Connection, post_id: int) -> sqlite3.Row:
     post = conn.execute(
-        "SELECT id, notion_page_id, notion_state, user_caption, summary FROM posts WHERE id = ?",
+        "SELECT id, notion_page_id, notion_state, user_caption, summary, url, fetched_url"
+        " FROM posts WHERE id = ?",
         (post_id,),
     ).fetchone()
     if post is None:
@@ -343,11 +405,13 @@ def _load(conn: sqlite3.Connection, where: str, params: tuple = ()) -> list[dict
     posts = conn.execute(
         "SELECT id, title, user_caption, uploader, platform_caption, url, notion_url, saved_at,"
         " summary, thumb_file, notion_state, status, error, retry_error, needs_login,"
-        f" media_ready, kind, page_file, duration, want_video FROM posts WHERE {where}"
+        " media_ready, kind, page_file, duration, want_video, fetched_url"
+        f" FROM posts WHERE {where}"
         " ORDER BY saved_at DESC, id DESC",
         params,
     ).fetchall()
     ids = [post["id"] for post in posts]
+    versions = {post["id"]: _version(post["fetched_url"]) for post in posts}
     marks = ",".join("?" * len(ids))
     tags: dict[int, dict[str, list[str]]] = defaultdict(lambda: {"notion": [], "ai": []})
     for post_id, kind, name in conn.execute(
@@ -366,7 +430,7 @@ def _load(conn: sqlite3.Connection, where: str, params: tuple = ()) -> list[dict
         items[item["post_id"]].append(
             {
                 "kind": item["kind"],
-                "src": f"/media/{item['file']}",
+                "src": f"/media/{item['file']}{versions[item['post_id']]}",
                 "width": item["width"],
                 "height": item["height"],
                 "duration": item["duration"],
@@ -389,12 +453,18 @@ def _load(conn: sqlite3.Connection, where: str, params: tuple = ()) -> list[dict
             "kind": post["kind"] if post["media_ready"] else "placeholder",
             "status": _status(post),
             "reason": post["error"] if post["status"] == "Failed" else post["retry_error"],
-            "thumb": f"/media/{post['thumb_file']}" if post["thumb_file"] else None,
+            "thumb": (
+                f"/media/{post['thumb_file']}{versions[post['id']]}" if post["thumb_file"] else None
+            ),
             "page": f"/api/posts/{post['id']}/page" if post["page_file"] else None,
             "description": post["platform_caption"] if post["kind"] == "page" else "",
             "duration": post["duration"],  # a preview's length, in seconds
             # A preview's video was asked for: it downloads now, or with the next Sync.
             "video_wanted": bool(post["want_video"]),
+            # The link its media came from (canonical), and whether its link has moved on since:
+            # the media stays on show until a resync replaces it.
+            "fetched_url": post["fetched_url"],
+            "link_changed": link_changed(post["url"], post["fetched_url"]),
             "state": post["notion_state"],
             "tags": tags[post["id"]]["notion"],
             "ai_tags": tags[post["id"]]["ai"],
@@ -402,6 +472,14 @@ def _load(conn: sqlite3.Connection, where: str, params: tuple = ()) -> list[dict
         }
         for post in posts
     ]
+
+
+def _version(fetched_url: str | None) -> str:
+    """A query naming the link a post's media came from. A resync's files take the old ones'
+    names, and without it a browser could go on showing the old ones from its cache."""
+    if not fetched_url:
+        return ""
+    return "?v=" + hashlib.sha1(fetched_url.encode()).hexdigest()[:8]
 
 
 def _status(post: sqlite3.Row) -> str:

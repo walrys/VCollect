@@ -1,9 +1,20 @@
-// The player's edit mode: caption, summary and both kinds of tags (a placeholder has only its
-// caption and Notion tags). Save hands the draft back; the player sends it to the server, which
-// passes it on to Notion.
+// The player's edit mode: link, caption, summary and both kinds of tags (a placeholder has only
+// its link, caption and Notion tags). Save hands the draft back; the player sends it to the
+// server, which passes it on to Notion. A post whose link changes then offers Resync.
 
 export function renderEditor(form, post, { knownTags, onSave, onCancel, placeholder = false }) {
   const draft = { tags: [...post.tags], ai_tags: [...post.ai_tags] };
+  const link = document.createElement("input");
+  Object.assign(link, {
+    className: "editor-link",
+    type: "text", // type=url would refuse a link typed without https://
+    inputMode: "url",
+    autocomplete: "off",
+    spellcheck: false,
+    value: post.url,
+    placeholder: "https://…",
+  });
+  link.setAttribute("autocapitalize", "off");
   const caption = textarea(post.caption, 2);
   const summary = textarea(post.summary, 6);
   const tagRows = {
@@ -26,7 +37,7 @@ export function renderEditor(form, post, { knownTags, onSave, onCancel, placehol
     tagRows.ai_tags.addTyped();
     save.disabled = true;
     try {
-      const changes = { caption: caption.value, tags: draft.tags };
+      const changes = { url: link.value, caption: caption.value, tags: draft.tags };
       if (!placeholder) Object.assign(changes, { summary: summary.value, ai_tags: draft.ai_tags });
       await onSave(changes);
     } finally {
@@ -35,8 +46,9 @@ export function renderEditor(form, post, { knownTags, onSave, onCancel, placehol
   };
   form.replaceChildren(
     ...(placeholder
-      ? [field("Caption", caption), field("Tags", tagRows.tags.element)]
+      ? [field("Link", link), field("Caption", caption), field("Tags", tagRows.tags.element)]
       : [
+          field("Link", link),
           field("Caption", caption),
           field("Summary", summary),
           field("Tags", tagRows.tags.element),
@@ -119,7 +131,8 @@ export function tagEditor(field, kind, draft, known, onChange) {
 // A <label> only around a single text box: clicking anywhere in a label activates its first
 // control, which in a tag editor would be a chip's remove button.
 function field(label, control) {
-  const wrapper = document.createElement(control.tagName === "TEXTAREA" ? "label" : "div");
+  const single = control.tagName === "TEXTAREA" || control.tagName === "INPUT";
+  const wrapper = document.createElement(single ? "label" : "div");
   wrapper.className = "editor-field";
   const text = document.createElement("span");
   text.textContent = label;

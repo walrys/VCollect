@@ -234,8 +234,9 @@ el("add-form").addEventListener("toggle", (event) => {
 });
 el("add-form").addEventListener("submit", addLink);
 document.addEventListener("vcollect:waiting", (event) => setSyncLabel(event.detail));
-// A row's Retry on the Processing page, or a preview's Download video: the server is
-// processing it now, in a running Sync (which this tab already follows) or in a run of its own.
+// A row's Retry on the Processing page, a post's Resync, or a preview's Download video: the
+// server is processing it now, in a running Sync (which this tab already follows) or in a run
+// of its own.
 document.addEventListener("vcollect:retrying", async () => {
   if (!following) followSync(await (await fetch("/api/sync")).json());
 });

@@ -24,7 +24,7 @@ from app.pipeline.download import Downloader
 from app.pipeline.errors import LoginNeeded, PostFailed, TryLater
 from app.pipeline.summarise import PostContext, Summariser
 from app.pipeline.transcribe import Transcriber
-from app.pipeline.urls import PostUrl, normalise
+from app.pipeline.urls import PostUrl, link_changed, normalise
 
 MAX_MODEL_IMAGES = 8
 VOCABULARY_SIZE = 150
@@ -87,7 +87,8 @@ class Pipeline:
             raise skip_sites[link.site].again()
         _reject_duplicate(conn, post, link)
 
-        if not post["media_ready"]:
+        # A post whose link changed since its media was fetched is fetched afresh (a resync).
+        if not post["media_ready"] or link_changed(post["url"], post["fetched_url"]):
             await self._fetch_media(conn, post_id, link, on_step, skip_sites)
 
         post = _post(conn, post_id)
@@ -117,6 +118,11 @@ class Pipeline:
         did not give. A failure leaves the preview as it was: PostFailed for good, a passing
         one (TryLater) until the next Sync, which tries again."""
         post = _post(conn, post_id)
+        if link_changed(post["url"], post["fetched_url"]):
+            # The video of the new link would sit under the old link's summary.
+            with conn:
+                conn.execute("UPDATE posts SET want_video = 0 WHERE id = ?", (post_id,))
+            raise PostFailed("Its link changed since: Resync fetches the post from the new link")
         link = normalise(post["url"])
         if link.site in skip_sites:
             raise skip_sites[link.site].again()
@@ -144,12 +150,16 @@ class Pipeline:
     ) -> None:
         work = self.work_root / str(post_id)
         manifest = work / "download.json"
-        if not manifest.exists():
+        source = work / "link.txt"  # the link the download is of
+        if not (manifest.exists() and _read(source) == link.url):
             on_step("downloading")
-            shutil.rmtree(work, ignore_errors=True)  # leftovers of an interrupted download
+            # Leftovers of an interrupted download, or one of a link the post has since left.
+            shutil.rmtree(work, ignore_errors=True)
             download = await self.services.downloader.download(
                 link, work / "raw", skip_sites, video=video
             )
+            work.mkdir(parents=True, exist_ok=True)
+            source.write_text(link.url)
             manifest.write_text(download.to_json())
         download = Download.from_json(manifest.read_text())
         if download.url and download.url != link.url:
@@ -166,10 +176,13 @@ class Pipeline:
             on_step("compressing")
         else:
             on_step("saving the preview" if download.preview else "saving the page")
-        await self._store_media(conn, post_id, work / "raw", download)
+        await self._store_media(conn, post_id, work / "raw", download, link.url)
         shutil.rmtree(work, ignore_errors=True)
 
-    async def _store_media(self, conn, post_id: int, raw: Path, download: Download) -> None:
+    async def _store_media(
+        self, conn, post_id: int, raw: Path, download: Download, link: str
+    ) -> None:
+        """`link` is the canonical link the download is of."""
         # Made beside the post's files, which stay on show (a preview's thumbnail while its
         # video compresses) until these replace them.
         out = self.media_root / f"{post_id}.new"
@@ -197,7 +210,11 @@ class Pipeline:
             conn.execute(
                 "UPDATE posts SET title = ?, uploader = ?, platform_caption = ?,"
                 " source_transcript = ?, thumb_file = ?, kind = ?, page_file = ?, page_text = ?,"
-                " duration = ?, media_ready = 1 WHERE id = ?",
+                " duration = ?, media_ready = 1,"
+                # What was made from another link's media (a resync) is made again.
+                " transcript = CASE WHEN fetched_url IS ? THEN transcript END,"
+                " generated = CASE WHEN fetched_url IS ? THEN generated END,"
+                " fetched_url = ? WHERE id = ?",
                 (
                     download.title,
                     download.uploader,
@@ -208,6 +225,9 @@ class Pipeline:
                     page_file,
                     download.page.text if download.page else "",
                     download.duration if download.preview else None,
+                    link,
+                    link,
+                    link,
                     post_id,
                 ),
             )
@@ -340,12 +360,22 @@ class Pipeline:
             },
         )
         shutil.rmtree(self.work_root / str(post_id), ignore_errors=True)
+        if post["media_ready"] and link_changed(post["url"], post["fetched_url"]):
+            # A resync that failed: the media of the old link stays on show, flagged, until
+            # one succeeds.
+            with conn:
+                conn.execute(
+                    "UPDATE posts SET status = 'Failed', error = ?, processed_at = ? WHERE id = ?",
+                    (message, _now(), post_id),
+                )
+            return
         shutil.rmtree(self.media_root / str(post_id), ignore_errors=True)
         with conn:
             conn.execute("DELETE FROM items WHERE post_id = ?", (post_id,))
             conn.execute(
                 "UPDATE posts SET status = 'Failed', error = ?, media_ready = 0, thumb_file = NULL,"
-                " kind = 'media', page_file = NULL, page_text = '', processed_at = ? WHERE id = ?",
+                " kind = 'media', page_file = NULL, page_text = '', fetched_url = NULL,"
+                " processed_at = ? WHERE id = ?",
                 (message, _now(), post_id),
             )
             db.reindex_post(conn, post_id)
@@ -382,6 +412,13 @@ def _reject_duplicate(conn: sqlite3.Connection, post: sqlite3.Row, link: PostUrl
     ).fetchone()
     if original:
         raise PostFailed(f"Duplicate of {original['notion_url'] or original['url']}")
+
+
+def _read(path: Path) -> str | None:
+    try:
+        return path.read_text()
+    except FileNotFoundError:
+        return None
 
 
 def _post(conn: sqlite3.Connection, post_id: int) -> sqlite3.Row:

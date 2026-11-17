@@ -329,6 +329,13 @@ function tile(post) {
     remote.title = "Not downloaded: a preview";
     badges.append(remote);
   }
+  // Its link moved on since its media was fetched: the pop-up offers Resync.
+  if (post.link_changed) {
+    const failed = post.status === "failed";
+    const changed = badge(failed ? "Resync failed" : "Link changed", failed ? "danger" : "warn");
+    changed.title = "Its link changed since its media was fetched";
+    badges.append(changed);
+  }
   if (post.state === "deleted_in_notion") badges.append(badge("Deleted in Notion", "warn"));
   if (post.state === "local_only") badges.append(badge("Not in Notion", "warn"));
   button.append(badges);

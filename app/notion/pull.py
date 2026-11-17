@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from app import db
 from app.config import NotionProps
 from app.notion.client import NotionClient
+from app.pipeline.urls import canonical
 
 # pending_edits.field -> the NotionRow attribute it overrides.
 EDIT_FIELDS = {
@@ -15,6 +16,7 @@ EDIT_FIELDS = {
     "summary": "summary",
     "tags": "tags",
     "ai_tags": "ai_tags",
+    "url": "url",
 }
 
 
@@ -79,14 +81,20 @@ def parse_page(page: dict, props: NotionProps) -> NotionRow:
 
 def upsert_row(conn: sqlite3.Connection, row: NotionRow) -> int:
     """Write one Notion row into its post, creating the post if new; returns the post id."""
+    key, platform = canonical(row.url)
     post_id = conn.execute(
         """
         INSERT INTO posts (notion_page_id, notion_url, url, user_caption, summary, status, error,
-                           saved_at, notion_edited_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                           saved_at, notion_edited_at, normalized_url, platform)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (notion_page_id) DO UPDATE SET
             notion_url = excluded.notion_url,
             url = excluded.url,
+            -- The duplicate key follows the link; a resolved share link keeps its post's.
+            normalized_url = CASE WHEN posts.url = excluded.url THEN posts.normalized_url
+                                  ELSE excluded.normalized_url END,
+            platform = CASE WHEN posts.url = excluded.url THEN posts.platform
+                            ELSE excluded.platform END,
             user_caption = excluded.user_caption,
             summary = excluded.summary,
             status = excluded.status,
@@ -107,6 +115,8 @@ def upsert_row(conn: sqlite3.Connection, row: NotionRow) -> int:
             row.error,
             row.saved_at,
             row.edited_at,
+            key,
+            platform,
         ),
     ).fetchone()[0]
     db.set_tags(conn, post_id, "notion", row.tags)
@@ -124,7 +134,8 @@ def _keep_newer_local_edits(conn: sqlite3.Connection, row: NotionRow) -> NotionR
     """Newest edit wins per field: a gallery edit Notion has not received yet beats an older
     Notion value, and a later Notion edit replaces it (Notion times are to the minute)."""
     post = conn.execute(
-        "SELECT id, user_caption, summary FROM posts WHERE notion_page_id = ?", (row.page_id,)
+        "SELECT id, user_caption, summary, url FROM posts WHERE notion_page_id = ?",
+        (row.page_id,),
     ).fetchone()
     if post is None:
         return row
@@ -146,8 +157,8 @@ def _keep_newer_local_edits(conn: sqlite3.Connection, row: NotionRow) -> NotionR
 def _local_value(conn: sqlite3.Connection, post: sqlite3.Row, field: str):
     if field == "caption":
         return post["user_caption"]
-    if field == "summary":
-        return post["summary"]
+    if field in ("summary", "url"):
+        return post[field]
     kind = "notion" if field == "tags" else "ai"
     return db.tag_names(conn, post["id"], kind)
 

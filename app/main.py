@@ -15,6 +15,7 @@ from app.config import Settings
 from app.notion.client import NotionClient
 from app.notion.mirror import Mirror
 from app.pipeline.runner import Processor, Syncer
+from app.pipeline.urls import index_links
 from app.pipeline.worker import Worker
 
 if TYPE_CHECKING:
@@ -42,6 +43,7 @@ def create_app(
         (settings.data_dir / "media").mkdir(parents=True, exist_ok=True)
         with closing(db.connect(settings.db_path)) as conn:
             db.migrate(conn)
+            index_links(conn)  # links a migration left without their key and platform
 
         client = notion
         if client is None and settings.notion_configured:

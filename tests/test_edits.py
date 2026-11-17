@@ -182,3 +182,74 @@ def test_add_link_refuses_what_is_not_a_link(synced):
     response = synced.client.post("/api/posts", json={"url": "an idea for later"})
     assert response.status_code == 422
     assert "not a link" in response.json()["detail"]
+
+
+PASTA_LINK = "https://www.instagram.com/reel/AbCdEf/"
+
+
+def test_a_link_edit_saves_here_and_in_notion(synced):
+    post = synced.post("pasta trick")
+    new = "https://www.instagram.com/reel/XyZ123/?igsh=abc"
+    response = synced.client.patch(f"/api/posts/{post['id']}", json={"url": f" {new} "}).json()
+
+    assert response["notion"] == "saved"
+    saved = response["post"]
+    assert saved["url"] == new
+    # The media is the old link's until a resync.
+    assert saved["link_changed"] is True
+    assert saved["fetched_url"] == "https://www.instagram.com/p/AbCdEf/"
+    assert saved["items"] == post["items"]
+    assert synced.notion.row(synced.pages["pasta trick"])["url"] == new
+    assert synced.search("XyZ123") == [post["id"]]
+    assert list(synced.notion.page_updates[-1][1]) == ["URL"]
+
+
+def test_a_link_changed_only_in_its_tracking_is_the_same_link(synced):
+    post = synced.post("pasta trick")
+    response = synced.client.patch(
+        f"/api/posts/{post['id']}", json={"url": f"{PASTA_LINK}?igsh=xyz"}
+    ).json()
+    assert response["notion"] == "saved"
+    assert response["post"]["link_changed"] is False
+
+
+def test_a_link_must_be_a_link(synced):
+    post = synced.post("pasta trick")
+    for bad in ("", "not a link"):
+        response = synced.client.patch(f"/api/posts/{post['id']}", json={"url": bad})
+        assert response.status_code == 422
+    assert synced.post("pasta trick")["url"] == PASTA_LINK
+
+
+def test_a_link_another_post_has_is_saved_once_confirmed(synced):
+    pasta, synth = synced.post("pasta trick"), synced.post("synth patch")
+    edit = {"url": "https://www.youtube.com/watch?v=dvUGDMxl8OU"}
+
+    refused = synced.client.patch(f"/api/posts/{pasta['id']}", json=edit)
+    assert refused.status_code == 409
+    assert refused.json()["detail"]["duplicate"]["id"] == synth["id"]
+    assert synced.post("pasta trick")["url"] == PASTA_LINK
+
+    forced = synced.client.patch(f"/api/posts/{pasta['id']}", json={**edit, "force": True})
+    assert forced.json()["post"]["url"] == edit["url"]
+
+
+def test_a_link_edit_outlasts_a_pull_while_notion_is_down(synced, settings):
+    post = synced.post("pasta trick")
+    new = "https://www.instagram.com/reel/XyZ123/"
+    synced.notion.refuse_page_updates = True
+    response = synced.client.patch(f"/api/posts/{post['id']}", json={"url": new})
+    assert response.json()["notion"] == "waiting"
+    assert waiting_edits(settings) == [(post["id"], "url")]
+
+    # A pull reads Notion's older link back, and the newer edit here wins.
+    synced.client.post("/api/sync")
+    wait_for_sync(synced.client)
+    assert synced.post("pasta trick")["url"] == new
+    assert synced.notion.row(synced.pages["pasta trick"])["url"] == PASTA_LINK
+
+    synced.notion.refuse_page_updates = False
+    synced.client.post("/api/sync")
+    wait_for_sync(synced.client)
+    assert synced.notion.row(synced.pages["pasta trick"])["url"] == new
+    assert waiting_edits(settings) == []

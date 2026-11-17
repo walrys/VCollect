@@ -360,3 +360,120 @@ def test_the_later_copy_of_a_link_is_the_duplicate(notion, conn, tmp_path, sampl
 
     assert notion.row(second_page)["status"] == "Failed"
     assert notion.row(first_page)["status"] == "Done"
+
+
+OLD_LINK = "https://www.instagram.com/p/AbCdEf/"
+NEW_LINK = "https://www.instagram.com/p/XyZ123/"
+
+
+def change_link(notion, conn, page_id, url):
+    """The user changes the row's link in Notion; a pull brings it in."""
+    notion.edit_row(page_id, url=url)
+    asyncio.run(pull(notion, PROPS, conn))
+
+
+def reopen(conn, post_id):
+    """What a resync does before processing the post (Mirror.reopen)."""
+    with conn:
+        conn.execute("UPDATE posts SET status = 'Not started' WHERE id = ?", (post_id,))
+
+
+def test_a_changed_link_is_fetched_afresh_when_resynced(notion, conn, tmp_path, samples):
+    services = fake_services([samples["portrait.mp4"]])
+    pipeline = make_pipeline(notion, tmp_path, services)
+    page_id, post_id = add_post(
+        notion, conn, url="https://www.instagram.com/reel/AbCdEf/", caption="note"
+    )
+    process(pipeline, conn, post_id)
+    assert post(conn, post_id)["fetched_url"] == OLD_LINK
+
+    change_link(notion, conn, page_id, "https://www.instagram.com/reel/XyZ123/?igsh=abc")
+    saved = post(conn, post_id)
+    assert (saved["normalized_url"], saved["fetched_url"]) == (NEW_LINK, OLD_LINK)
+    reopen(conn, post_id)
+    services.downloader.files = [samples["photo.png"]]
+    services.summariser.summary, services.summariser.tags = "About the new post.", ["dance"]
+
+    steps = process(pipeline, conn, post_id)
+
+    assert steps == [
+        "downloading",
+        "compressing",
+        "transcribing",
+        "summarising",
+        "saving to Notion",
+    ]
+    assert services.downloader.calls == [OLD_LINK, NEW_LINK]
+    saved = post(conn, post_id)
+    assert saved["fetched_url"] == NEW_LINK
+    assert (saved["status"], saved["summary"], saved["user_caption"]) == (
+        "Done",
+        "About the new post.",
+        "note",
+    )
+    # The old video's transcript went with it: the new post is an image, with nothing to hear.
+    assert saved["transcript"] == ""
+    assert services.summariser.contexts[1].transcript == ""
+    assert [i["kind"] for i in items(conn, post_id)] == ["image"]
+    assert ai_tags(conn, post_id) == ["dance"]
+    row = notion.row(page_id)
+    assert (row["status"], row["summary"], row["ai_tags"]) == (
+        "Done",
+        "About the new post.",
+        ["dance"],
+    )
+
+
+def test_a_resync_that_fails_keeps_the_old_media(notion, conn, tmp_path, samples):
+    services = fake_services([samples["portrait.mp4"]])
+    pipeline = make_pipeline(notion, tmp_path, services)
+    page_id, post_id = add_post(notion, conn, url="https://www.instagram.com/reel/AbCdEf/")
+    process(pipeline, conn, post_id)
+    before = [tuple(item) for item in items(conn, post_id)]
+
+    change_link(notion, conn, page_id, "https://www.instagram.com/reel/XyZ123/")
+    reopen(conn, post_id)
+    gone = "Could not download: This content is no longer available"
+    services.downloader.errors["XyZ123"] = PostFailed(gone)
+    with pytest.raises(PostFailed):
+        process(pipeline, conn, post_id)
+
+    saved = post(conn, post_id)
+    assert (saved["status"], saved["error"], saved["media_ready"]) == ("Failed", gone, 1)
+    assert (saved["fetched_url"], saved["summary"]) == (OLD_LINK, "A short summary.")
+    assert [tuple(item) for item in items(conn, post_id)] == before
+    assert (tmp_path / "data" / "media" / saved["thumb_file"]).exists()
+    assert (notion.row(page_id)["status"], notion.row(page_id)["error"]) == ("Failed", gone)
+
+
+def test_an_unfinished_download_of_an_old_link_is_not_used(notion, conn, tmp_path, samples):
+    services = fake_services([samples["portrait.mp4"]])
+    pipeline = make_pipeline(notion, tmp_path, services)
+    page_id, post_id = add_post(notion, conn, url="https://www.instagram.com/reel/AbCdEf/")
+
+    def stop_while_compressing(step):
+        if step == "compressing":
+            raise TryLater("Cancelled")
+
+    index_links(conn)
+    with pytest.raises(TryLater):
+        asyncio.run(pipeline.process(conn, post_id, stop_while_compressing))
+    assert (tmp_path / "data" / "work" / str(post_id) / "download.json").exists()
+
+    change_link(notion, conn, page_id, "https://www.instagram.com/reel/XyZ123/")
+    process(pipeline, conn, post_id)
+
+    assert services.downloader.calls == [OLD_LINK, NEW_LINK]
+    assert post(conn, post_id)["fetched_url"] == NEW_LINK
+
+
+def test_a_preview_whose_link_changed_downloads_no_video(notion, conn, tmp_path, samples):
+    pipeline, post_id, page_id = preview_wanted(notion, conn, tmp_path, samples)
+    change_link(notion, conn, page_id, "https://youtu.be/AAAAAAAAAAA")
+
+    with pytest.raises(PostFailed, match="link changed"):
+        process(pipeline, conn, post_id)
+
+    saved = post(conn, post_id)
+    assert (saved["kind"], saved["status"], saved["want_video"]) == ("preview", "Done", 0)
+    assert pipeline.services.downloader.video_calls == []

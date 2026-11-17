@@ -135,6 +135,21 @@ class Syncer:
             self._enqueue([post_id], first=True)
         return bool(asked)
 
+    async def resync(self, post_id: int) -> bool:
+        """Fetches a post afresh from its link, which changed since its media was fetched, at
+        once: next in the running job, else in a run of its own. The row goes back to Not
+        started (Mirror.reopen); its media stays on show until the new media replaces it, and
+        its transcript, summary and AI tags are made again. False when the post is being
+        processed right now, or is not in Notion."""
+        if post_id == self._in_hand or not await self.mirror.reopen(post_id):
+            return False
+        if post_id == self._in_hand:  # taken up meanwhile, as a row already Not started
+            return True
+        if not self.running:
+            self._begin(pull=False)
+        self._enqueue([post_id], first=True)
+        return True
+
     def cancel(self) -> None:
         self._cancelled = True
         self.processor.cancel()

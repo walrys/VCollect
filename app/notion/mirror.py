@@ -95,7 +95,6 @@ class Mirror:
             with closing(db.connect(self.db_path)) as conn:
                 post = conn.execute("SELECT * FROM posts WHERE id = ?", (post_id,)).fetchone()
                 properties = {
-                    self.props.url: values.url(post["url"]),
                     self.props.status: values.status(post["status"]),
                     **{
                         self._property(field): self._value(conn, post_id, post, field)
@@ -148,6 +147,41 @@ class Mirror:
                     reset.append(post_id)
                 return reset
 
+    async def reopen(self, post_id: int) -> bool:
+        """Sets a row back to Not started, in Notion and here, whatever its status, so Sync
+        processes it again (a resync). False when the post is not in Notion."""
+        async with self._lock:
+            await self._ensure_schema()
+            with closing(db.connect(self.db_path)) as conn:
+                post = conn.execute(
+                    "SELECT notion_page_id, status FROM posts"
+                    " WHERE id = ? AND notion_state = 'synced'",
+                    (post_id,),
+                ).fetchone()
+                if post is None:
+                    return False
+                if post["status"] != "Not started":
+                    try:
+                        await self.client.update_page(
+                            post["notion_page_id"],
+                            {
+                                self.props.status: values.status("Not started"),
+                                self.props.error: values.rich_text(""),
+                            },
+                        )
+                    except NotionError as error:
+                        if error.status == 404:
+                            return False  # gone from Notion; the next pull flags it
+                        raise
+                with conn:
+                    # The post is fetched afresh, so a preview's video asked for goes too.
+                    conn.execute(
+                        "UPDATE posts SET status = 'Not started', error = '', retry_error = '',"
+                        " needs_login = 0, want_video = 0 WHERE id = ?",
+                        (post_id,),
+                    )
+                return True
+
     async def auto_pull(self, every: float = AUTO_PULL_SECONDS) -> None:
         """Runs for the app's lifetime, pulling every `every` seconds while auto-pull is on."""
         while True:
@@ -188,7 +222,7 @@ class Mirror:
             "SELECT field, edited_at FROM pending_edits WHERE post_id = ?", (post_id,)
         ).fetchall()
         post = conn.execute(
-            "SELECT notion_page_id, user_caption, summary FROM posts WHERE id = ?", (post_id,)
+            "SELECT notion_page_id, user_caption, summary, url FROM posts WHERE id = ?", (post_id,)
         ).fetchone()
         if not pending:
             return True
@@ -216,6 +250,7 @@ class Mirror:
             "summary": self.props.summary,
             "tags": self.props.tags,
             "ai_tags": self.props.ai_tags,
+            "url": self.props.url,
         }[field]
 
     def _value(self, conn: sqlite3.Connection, post_id: int, post: sqlite3.Row, field: str):
@@ -224,6 +259,8 @@ class Mirror:
             return values.title(text) if self._caption_kind == "title" else values.rich_text(text)
         if field == "summary":
             return values.rich_text(post["summary"])
+        if field == "url":
+            return values.url(post["url"])
         return values.multi_select(
             db.tag_names(conn, post_id, "notion" if field == "tags" else "ai")
         )
